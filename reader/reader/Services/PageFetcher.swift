@@ -129,8 +129,9 @@ nonisolated struct PageFetcher: Sendable {
             in: prefix)
     }
 
-    /// IANA name → String.Encoding; nil for unknown names.
-    private static func encoding(fromIANAName name: String) -> String.Encoding? {
+    /// IANA name → String.Encoding; nil for unknown names. Internal because
+    /// mail-header decoding shares it.
+    static func encoding(fromIANAName name: String) -> String.Encoding? {
         let cfEncoding = CFStringConvertIANACharSetNameToEncoding(name as CFString)
         guard cfEncoding != kCFStringEncodingInvalidId else { return nil }
         return String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(cfEncoding))

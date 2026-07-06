@@ -26,6 +26,7 @@ struct readerApp: App {
 
     @State private var scheduler = RefreshScheduler(modelContainer: readerApp.sharedModelContainer)
     @State private var linkSaver = LinkSaver(modelContainer: readerApp.sharedModelContainer)
+    @State private var gmailAccount = GmailAccountController()
 
     var body: some Scene {
         WindowGroup {
@@ -34,6 +35,7 @@ struct readerApp: App {
         .modelContainer(Self.sharedModelContainer)
         .environment(scheduler)
         .environment(linkSaver)
+        .environment(gmailAccount)
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Refresh All Feeds") {
@@ -51,6 +53,7 @@ struct readerApp: App {
         Settings {
             SettingsView()
                 .environment(scheduler)
+                .environment(gmailAccount)
         }
     }
 

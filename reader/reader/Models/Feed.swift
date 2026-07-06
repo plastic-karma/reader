@@ -48,6 +48,14 @@ extension Feed {
         articles.count { !$0.isRead }
     }
 
+    /// Marks every unread article in this feed read. Skips already-read
+    /// articles so repeat invocations don't dirty untouched models.
+    func markAllRead() {
+        for article in articles where !article.isRead {
+            article.isRead = true
+        }
+    }
+
     /// Sentinel URL of the hidden feed that stores saved-link snapshots.
     /// Deliberately non-http: AddFeedSheet's URL normalizer admits only
     /// http(s), so no user-entered feed can collide with it.

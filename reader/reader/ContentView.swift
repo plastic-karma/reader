@@ -53,6 +53,18 @@ struct ContentView: View {
                     }
                 }
                 ToolbarItem {
+                    // ⌘⇧A lives on the equivalent menu-bar command, not here —
+                    // duplicating it would make the shortcut ambiguous.
+                    Button {
+                        withAnimation {
+                            Article.markAllRead(in: modelContext)
+                        }
+                    } label: {
+                        Label("Mark All as Read", systemImage: "checkmark.circle")
+                    }
+                    .disabled(totalUnreadCount == 0)
+                }
+                ToolbarItem {
                     Button {
                         isAddingFeed = true
                     } label: {
@@ -145,6 +157,13 @@ struct ContentView: View {
     /// so future subscription kinds stay visible by default.
     private var subscriptionFeeds: [Feed] {
         feeds.filter { !$0.isSavedLinksFeed }
+    }
+
+    /// Unread across all subscriptions — drives the mark-all-read toolbar
+    /// button's disabled state. Saved links never count: they are excluded
+    /// from the global action too, so button and action stay in agreement.
+    private var totalUnreadCount: Int {
+        subscriptionFeeds.reduce(0) { $0 + $1.unreadCount }
     }
 
     /// The hidden feed backing the Saved segment; nil until the first save.
@@ -295,10 +314,11 @@ struct ContentView: View {
                         Button("Expand All") { setAllCollapsed(false) }
                         Divider()
                         Button("Mark All as Read") {
-                            for article in feed.articles {
-                                article.isRead = true
+                            withAnimation {
+                                feed.markAllRead()
                             }
                         }
+                        .disabled(feed.unreadCount == 0)
                         Button("Rename…") {
                             renameText = feed.title
                             feedPendingRename = feed

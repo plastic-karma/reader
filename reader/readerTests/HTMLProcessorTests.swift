@@ -212,4 +212,27 @@ final class HTMLProcessorTests: XCTestCase {
         )
         XCTAssertNil(HTMLProcessor.firstCapture(of: "<h1>(.*?)</h1>", in: html))
     }
+
+    // MARK: - strippingTrackingPixels
+
+    func testStripsOneByOneAndZeroSizedPixels() {
+        let html = #"<p>Hi</p><img src="https://t.example/o.gif" width="1" height="1" alt=""><img width="0" height="0" src="https://t.example/z.gif"><p>Bye</p>"#
+        XCTAssertEqual(
+            HTMLProcessor.strippingTrackingPixels(html: html),
+            "<p>Hi</p><p>Bye</p>"
+        )
+    }
+
+    func testKeepsRealImagesAndUndeclaredSizes() {
+        let hero = #"<img src="https://cdn.example/hero.png" width="600" height="400">"#
+        let unsized = #"<img src="https://cdn.example/photo.jpg">"#
+        let thin = #"<img src="https://cdn.example/rule.png" width="1" height="50">"#
+        let html = hero + unsized + thin
+        XCTAssertEqual(HTMLProcessor.strippingTrackingPixels(html: html), html)
+    }
+
+    func testStripsQuotedAndUnquotedPixelDimensions() {
+        let html = #"<img src="https://t.example/p" width=1 height='1'>"#
+        XCTAssertEqual(HTMLProcessor.strippingTrackingPixels(html: html), "")
+    }
 }

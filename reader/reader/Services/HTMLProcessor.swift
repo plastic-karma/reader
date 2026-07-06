@@ -38,6 +38,24 @@ nonisolated enum HTMLProcessor {
 
     // MARK: - Images
 
+    /// Removes `<img>` tags whose declared width and height are both 0 or 1
+    /// — the classic open-tracking-pixel shape in newsletters and feeds.
+    /// Runs before image caching so the per-recipient beacon URL is never
+    /// fetched at ingest time, complementing the render-time CSP (which
+    /// only blocks uncached loads). Pixels declared via CSS alone slip
+    /// through; that residual risk is documented in docs/gmail-setup.md.
+    static func strippingTrackingPixels(html: String) -> String {
+        transformingMatches(of: imgTagPattern, in: html) { tag in
+            let pixelValues: Set<String> = ["0", "1"]
+            guard let width = attributeValue("width", inTag: tag),
+                  let height = attributeValue("height", inTag: tag),
+                  pixelValues.contains(width.trimmingCharacters(in: .whitespaces)),
+                  pixelValues.contains(height.trimmingCharacters(in: .whitespaces))
+            else { return tag }
+            return ""
+        }
+    }
+
     /// Remote image URLs referenced by `<img>` tags, in document order,
     /// deduplicated. Prefers the lazy-load `data-src` over `src`, resolves
     /// relative values against `baseURL`, and keeps only http(s) results.

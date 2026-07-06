@@ -8,7 +8,8 @@ import SwiftData
 
 /// Registers a feed by URL: fetches and parses it once for a preview
 /// (title + item count), then inserts on confirm and triggers an immediate
-/// refresh of just that feed.
+/// refresh of just that feed. Pasting a blog's homepage URL works too —
+/// the advertised feed is discovered via <link rel="alternate">.
 struct AddFeedSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -17,7 +18,7 @@ struct AddFeedSheet: View {
     private enum Phase: Equatable {
         case editing
         case validating
-        case validated(title: String, itemCount: Int, homepageURL: URL?)
+        case validated(feedURL: URL, title: String, itemCount: Int, homepageURL: URL?)
     }
 
     @State private var urlString = ""
@@ -43,9 +44,14 @@ struct AddFeedSheet: View {
             }
             .disabled(phase == .validating)
 
-            if case .validated(let title, let itemCount, _) = phase {
+            if case .validated(let feedURL, let title, let itemCount, _) = phase {
                 Label {
-                    Text("\(title) — \(itemCount) article\(itemCount == 1 ? "" : "s")")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(title) — \(itemCount) article\(itemCount == 1 ? "" : "s")")
+                        Text(feedURL.absoluteString)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 } icon: {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
@@ -96,8 +102,8 @@ struct AddFeedSheet: View {
             validate()
         case .validating:
             break
-        case .validated(let title, _, let homepageURL):
-            add(title: title, homepageURL: homepageURL)
+        case .validated(let feedURL, let title, _, let homepageURL):
+            add(feedURL: feedURL, title: title, homepageURL: homepageURL)
         }
     }
 
@@ -114,19 +120,21 @@ struct AddFeedSheet: View {
         phase = .validating
         Task {
             do {
-                let result = try await fetcher.fetch(url: url, etag: nil, lastModified: nil)
-                guard case .fetched(let data, _, _) = result else {
-                    throw FeedFetcher.FetchError.badStatus(304)
+                let (feedURL, parsed) = try await resolveFeed(at: url)
+                guard !isDuplicate(feedURL) else {
+                    phase = .editing
+                    errorMessage = "This feed is already added."
+                    return
                 }
-                let parsed = try FeedParser.parse(data: data, sourceURL: url)
                 phase = .validated(
-                    title: parsed.title ?? url.host() ?? url.absoluteString,
+                    feedURL: feedURL,
+                    title: parsed.title ?? feedURL.host() ?? feedURL.absoluteString,
                     itemCount: parsed.items.count,
                     homepageURL: parsed.homepageURL
                 )
             } catch FeedParseError.notAFeed {
                 phase = .editing
-                errorMessage = "That URL isn't an RSS or Atom feed."
+                errorMessage = "No RSS or Atom feed found at that URL."
             } catch FeedParseError.malformed {
                 phase = .editing
                 errorMessage = "The feed couldn't be parsed."
@@ -137,8 +145,32 @@ struct AddFeedSheet: View {
         }
     }
 
-    private func add(title: String, homepageURL: URL?) {
-        guard let url = normalizedURL(from: urlString) else { return }
+    /// Fetch and parse; when the URL turns out to be an HTML page rather than
+    /// a feed, discover its advertised feed and use that instead.
+    private func resolveFeed(at url: URL) async throws -> (URL, ParsedFeed) {
+        let data = try await fetchData(at: url)
+        do {
+            return (url, try FeedParser.parse(data: data, sourceURL: url))
+        } catch FeedParseError.notAFeed {
+            let html = String(decoding: data, as: UTF8.self)
+            guard let candidate = FeedAutodiscovery.feedURLs(inHTML: html, baseURL: url).first else {
+                throw FeedParseError.notAFeed
+            }
+            let feedData = try await fetchData(at: candidate)
+            return (candidate, try FeedParser.parse(data: feedData, sourceURL: candidate))
+        }
+    }
+
+    private func fetchData(at url: URL) async throws -> Data {
+        let result = try await fetcher.fetch(url: url, etag: nil, lastModified: nil)
+        guard case .fetched(let data, _, _) = result else {
+            // A 304 to an unconditional request is a server bug.
+            throw FeedFetcher.FetchError.badStatus(304)
+        }
+        return data
+    }
+
+    private func add(feedURL url: URL, title: String, homepageURL: URL?) {
         guard !isDuplicate(url) else {
             errorMessage = "This feed is already added."
             return

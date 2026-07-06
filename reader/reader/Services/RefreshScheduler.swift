@@ -25,8 +25,10 @@ final class RefreshScheduler {
             UserDefaults.standard.set(intervalMinutes, forKey: Self.intervalDefaultsKey)
             // Mid-refresh the running loop reads the new value before its
             // next sleep; restarting now would cancel in-flight work.
+            // Rescheduling must not itself refresh: picking "Manually" means
+            // stop, not "refresh once more".
             if !isRefreshing {
-                restartLoop()
+                restartLoop(refreshFirst: false)
             }
         }
     }
@@ -60,11 +62,15 @@ final class RefreshScheduler {
         }
     }
 
-    private func restartLoop() {
+    private func restartLoop(refreshFirst: Bool = true) {
         loopTask?.cancel()
         loopTask = Task {
+            var shouldRefresh = refreshFirst
             while !Task.isCancelled {
-                await runOneRefresh()
+                if shouldRefresh {
+                    await runOneRefresh()
+                }
+                shouldRefresh = true
                 let minutes = intervalMinutes
                 guard minutes > 0 else { break }
                 do {

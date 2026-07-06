@@ -39,7 +39,26 @@ struct readerApp: App {
                 }
                 .keyboardShortcut("r", modifiers: .command)
                 .disabled(scheduler.isRefreshing)
+                Button("Mark All as Read") {
+                    markAllRead()
+                }
+                .keyboardShortcut("a", modifiers: [.command, .shift])
             }
+        }
+
+        Settings {
+            SettingsView()
+                .environment(scheduler)
+        }
+    }
+
+    private func markAllRead() {
+        let context = Self.sharedModelContainer.mainContext
+        let unread = (try? context.fetch(
+            FetchDescriptor<Article>(predicate: #Predicate { !$0.isRead })
+        )) ?? []
+        for article in unread {
+            article.isRead = true
         }
     }
 }

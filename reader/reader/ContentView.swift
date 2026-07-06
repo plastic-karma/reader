@@ -5,6 +5,7 @@
 //  Created by Benni Rogge on 7/5/26.
 //
 
+import AppKit
 import SwiftUI
 import SwiftData
 
@@ -24,6 +25,10 @@ struct ContentView: View {
     @State private var filter: ArticleFilter = .unread
     @State private var isAddingFeed = false
     @State private var feedPendingDeletion: Feed?
+    @State private var feedPendingRename: Feed?
+    @State private var renameText = ""
+    @State private var hostWindow: NSWindow?
+    @State private var keyDownMonitor: Any?
 
     var body: some View {
         NavigationSplitView {
@@ -68,6 +73,16 @@ struct ContentView: View {
                 EmptyStateView(state: .noSelection)
             }
         }
+        .background(HostWindowReader(window: $hostWindow))
+        .onAppear {
+            installKeyDownMonitor()
+        }
+        .onDisappear {
+            if let keyDownMonitor {
+                NSEvent.removeMonitor(keyDownMonitor)
+            }
+            keyDownMonitor = nil
+        }
         .onChange(of: selectedArticle) { _, newValue in
             newValue?.isRead = true
         }
@@ -96,6 +111,22 @@ struct ContentView: View {
             }
         } message: {
             Text("This removes the feed and all of its articles.")
+        }
+        .alert(
+            "Rename Feed",
+            isPresented: Binding(
+                get: { feedPendingRename != nil },
+                set: { if !$0 { feedPendingRename = nil } }
+            )
+        ) {
+            TextField("Name", text: $renameText)
+            Button("Rename") {
+                let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let feed = feedPendingRename, !name.isEmpty {
+                    feed.title = name
+                }
+            }
+            Button("Cancel", role: .cancel) {}
         }
     }
 
@@ -143,6 +174,18 @@ struct ContentView: View {
     }
 
     private func filteredList(sections: [(feed: Feed, articles: [Article])]) -> some View {
+        ScrollViewReader { proxy in
+            list(sections: sections)
+                .onChange(of: selectedArticle) { _, newValue in
+                    // j/k can move the selection offscreen; reveal it.
+                    if let newValue {
+                        proxy.scrollTo(newValue.persistentModelID)
+                    }
+                }
+        }
+    }
+
+    private func list(sections: [(feed: Feed, articles: [Article])]) -> some View {
         List(selection: $selectedArticle) {
             ForEach(sections, id: \.feed) { feed, articles in
                 // In All mode every feed stays visible (with a hint when it
@@ -182,6 +225,20 @@ struct ContentView: View {
                         }
                     }
                     .contextMenu {
+                        Button("Mark All as Read") {
+                            for article in feed.articles {
+                                article.isRead = true
+                            }
+                        }
+                        Button("Rename…") {
+                            renameText = feed.title
+                            feedPendingRename = feed
+                        }
+                        Button("Copy Feed URL") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(feed.feedURL.absoluteString, forType: .string)
+                        }
+                        Divider()
                         Button("Delete Feed…", role: .destructive) {
                             feedPendingDeletion = feed
                         }
@@ -191,6 +248,61 @@ struct ContentView: View {
             }
         }
         .listStyle(.sidebar)
+    }
+
+    /// j/k must work no matter which pane has key focus — clicking into the
+    /// article's WKWebView steals first responder, which would silence a
+    /// focus-scoped onKeyPress — so navigation keys are intercepted by a
+    /// window-scoped monitor instead.
+    private func installKeyDownMonitor() {
+        guard keyDownMonitor == nil else { return }
+        keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            MainActor.assumeIsolated {
+                guard
+                    event.window === hostWindow,
+                    hostWindow?.attachedSheet == nil,
+                    !(hostWindow?.firstResponder is NSText),
+                    event.modifierFlags
+                        .intersection(.deviceIndependentFlagsMask)
+                        .subtracting([.capsLock, .numericPad, .function])
+                        .isEmpty
+                else { return event }
+                switch event.charactersIgnoringModifiers {
+                case "j":
+                    selectNextUnread()
+                    return nil
+                case "k":
+                    selectPreviousUnread()
+                    return nil
+                default:
+                    return event
+                }
+            }
+        }
+    }
+
+    /// Visible articles across all feeds in display order (feeds sorted by
+    /// title, articles newest-first) — the traversal order for j/k.
+    private var flattenedVisibleArticles: [Article] {
+        feeds.flatMap { visibleArticles(for: $0) }
+    }
+
+    private func selectNextUnread() {
+        let all = flattenedVisibleArticles
+        guard !all.isEmpty else { return }
+        let start = selectedArticle.flatMap { all.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
+        if let next = all[start...].first(where: { !$0.isRead }) {
+            selectedArticle = next
+        }
+    }
+
+    private func selectPreviousUnread() {
+        let all = flattenedVisibleArticles
+        guard !all.isEmpty else { return }
+        let end = selectedArticle.flatMap { all.firstIndex(of: $0) } ?? all.count
+        if let previous = all[..<end].last(where: { !$0.isRead }) {
+            selectedArticle = previous
+        }
     }
 
     @ViewBuilder
@@ -209,6 +321,28 @@ struct ContentView: View {
         }
         withAnimation {
             modelContext.delete(feed)
+        }
+    }
+}
+
+/// Captures the NSWindow hosting this SwiftUI hierarchy so the key monitor
+/// can ignore events belonging to other windows, sheets, or alerts.
+private struct HostWindowReader: NSViewRepresentable {
+    @Binding var window: NSWindow?
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            window = view.window
+        }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async {
+            if window !== view.window {
+                window = view.window
+            }
         }
     }
 }

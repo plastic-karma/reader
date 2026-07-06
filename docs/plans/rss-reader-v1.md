@@ -1,6 +1,6 @@
 # Focused RSS Reader — macOS App: Design & Implementation Plan
 
-> **Status:** approved, not yet implemented. Execute milestone by milestone (§9); after each milestone run `bridge build --scheme reader` and `bridge test --scheme reader` (the host bridge worker must be running — check with `bridge status`).
+> **Status:** implemented (M1–M5, one commit per milestone, `bridge test` green after each). Remaining human smoke tests: add a real feed, confirm articles arrive and images render offline (§Verification). UI tests are skipped in the shared scheme's headless test action — run them from Xcode.
 
 ## Context
 

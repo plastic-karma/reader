@@ -173,7 +173,7 @@ nonisolated enum HTMLProcessor {
         return url
     }
 
-    private static func attributeValue(_ name: String, inTag tag: String) -> String? {
+    static func attributeValue(_ name: String, inTag tag: String) -> String? {
         let pattern = "(?<![\\w-])\(name)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))"
         guard let match = compile(pattern).firstMatch(in: tag, range: fullRange(of: tag)) else {
             return nil
@@ -201,7 +201,7 @@ nonisolated enum HTMLProcessor {
         compile(pattern).stringByReplacingMatches(in: string, range: fullRange(of: string), withTemplate: template)
     }
 
-    private static func matches(of pattern: String, in string: String) -> [String] {
+    static func matches(of pattern: String, in string: String) -> [String] {
         compile(pattern).matches(in: string, range: fullRange(of: string)).compactMap { match in
             Range(match.range, in: string).map { String(string[$0]) }
         }

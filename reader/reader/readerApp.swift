@@ -55,6 +55,8 @@ struct readerApp: App {
     }
 
     private func markAllRead() {
-        Article.markAllRead(in: Self.sharedModelContainer.mainContext)
+        withAnimation {
+            Article.markAllRead(in: Self.sharedModelContainer.mainContext)
+        }
     }
 }

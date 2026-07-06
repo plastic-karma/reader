@@ -65,8 +65,10 @@ extension Article {
         publishedAt ?? firstSeenAt
     }
 
-    /// ⌘⇧A: marks every unread *feed* article read. Saved-link articles live
-    /// only under the Saved view and are deliberately excluded.
+    /// Marks every unread *feed* article read (menu ⌘⇧A and the sidebar
+    /// toolbar button). Saved-link articles live only under the Saved view
+    /// and are deliberately excluded. Per-feed marking is
+    /// `Feed.markAllRead()`.
     nonisolated static func markAllRead(in context: ModelContext) {
         let unread = (try? context.fetch(
             FetchDescriptor<Article>(predicate: #Predicate { !$0.isRead })

@@ -187,6 +187,11 @@ final class HTMLProcessorTests: XCTestCase {
         XCTAssertEqual(result.count, 12)
     }
 
+    func testPlainTextExcerptDropsScriptAndStyleBodies() {
+        let html = "<p>Before</p><script>var x = 1;</script><style>p { color: red }</style><p>After</p>"
+        XCTAssertEqual(HTMLProcessor.plainTextExcerpt(from: html, maxLength: 100), "Before After")
+    }
+
     func testPlainTextExcerptReturnsShortInputUnchanged() {
         XCTAssertEqual(HTMLProcessor.plainTextExcerpt(from: "<p>Short note</p>", maxLength: 50), "Short note")
         XCTAssertEqual(HTMLProcessor.plainTextExcerpt(from: "Exact", maxLength: 5), "Exact")

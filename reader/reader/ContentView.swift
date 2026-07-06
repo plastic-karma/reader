@@ -10,6 +10,7 @@ import SwiftData
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(RefreshScheduler.self) private var scheduler
     @Query(sort: \Feed.title) private var feeds: [Feed]
     @State private var selectedArticle: Article?
     @State private var isAddingFeed = false
@@ -27,6 +28,19 @@ struct ContentView: View {
             .navigationSplitViewColumnWidth(min: 240, ideal: 320)
             .toolbar {
                 ToolbarItem {
+                    if scheduler.isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Button {
+                            scheduler.refreshNow()
+                        } label: {
+                            Label("Refresh All", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(feeds.isEmpty)
+                    }
+                }
+                ToolbarItem {
                     Button {
                         isAddingFeed = true
                     } label: {
@@ -34,6 +48,9 @@ struct ContentView: View {
                     }
                     .keyboardShortcut("n", modifiers: .command)
                 }
+            }
+            .task {
+                scheduler.start()
             }
         } detail: {
             if let article = selectedArticle {
@@ -79,12 +96,29 @@ struct ContentView: View {
                         }
                     }
                 } header: {
-                    Text(feed.title)
-                        .contextMenu {
-                            Button("Delete Feed…", role: .destructive) {
-                                feedPendingDeletion = feed
-                            }
+                    HStack(spacing: 6) {
+                        Text(feed.title)
+                            .lineLimit(1)
+                        if let lastError = feed.lastError {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.yellow)
+                                .help(lastError)
                         }
+                        Spacer()
+                        if feed.unreadCount > 0 {
+                            Text("\(feed.unreadCount)")
+                                .font(.caption)
+                                .monospacedDigit()
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(.quaternary, in: Capsule())
+                        }
+                    }
+                    .contextMenu {
+                        Button("Delete Feed…", role: .destructive) {
+                            feedPendingDeletion = feed
+                        }
+                    }
                 }
             }
         }
@@ -135,6 +169,11 @@ private struct ArticleDetailPlaceholder: View {
 }
 
 #Preview {
+    let container = try! ModelContainer(
+        for: Feed.self, Article.self,
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+    )
     ContentView()
-        .modelContainer(for: [Feed.self, Article.self], inMemory: true)
+        .modelContainer(container)
+        .environment(RefreshScheduler(modelContainer: container))
 }

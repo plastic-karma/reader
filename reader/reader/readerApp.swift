@@ -10,7 +10,7 @@ import SwiftData
 
 @main
 struct readerApp: App {
-    var sharedModelContainer: ModelContainer = {
+    private static let sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Feed.self,
             Article.self,
@@ -24,10 +24,22 @@ struct readerApp: App {
         }
     }()
 
+    @State private var scheduler = RefreshScheduler(modelContainer: readerApp.sharedModelContainer)
+
     var body: some Scene {
         WindowGroup {
             ContentView()
         }
-        .modelContainer(sharedModelContainer)
+        .modelContainer(Self.sharedModelContainer)
+        .environment(scheduler)
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button("Refresh All Feeds") {
+                    scheduler.refreshNow()
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(scheduler.isRefreshing)
+            }
+        }
     }
 }

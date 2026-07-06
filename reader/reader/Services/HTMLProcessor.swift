@@ -122,7 +122,10 @@ nonisolated enum HTMLProcessor {
     /// hard-truncated with a trailing ellipsis. `result.count <= maxLength`.
     static func plainTextExcerpt(from html: String, maxLength: Int) -> String {
         guard maxLength > 0 else { return "" }
-        var text = replacing(pattern: blockBoundaryPattern, in: html, with: " ")
+        // Script/style bodies are text nodes to the tag stripper below and
+        // would otherwise leak JS/CSS source into the excerpt.
+        var text = replacing(pattern: invisibleElementPattern, in: html, with: " ")
+        text = replacing(pattern: blockBoundaryPattern, in: text, with: " ")
         text = replacing(pattern: "<[^>]+>", in: text, with: "")
         text = decodeHTMLEntities(text)
         text = text
@@ -136,6 +139,9 @@ nonisolated enum HTMLProcessor {
         }
         return head + "…"
     }
+
+    private static let invisibleElementPattern =
+        "<(script|style|noscript)\\b[^>]*>.*?</\\1\\s*>"
 
     private static let blockBoundaryPattern =
         "<(?:(?:br|hr)\\b[^>]*"

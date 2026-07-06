@@ -147,6 +147,23 @@ struct ContentView: View {
             .sorted { $0.sortDate > $1.sortDate }
     }
 
+    /// Drives a section's disclosure triangle. Stored inverted so a brand-new
+    /// feed (isCollapsed == false) starts expanded.
+    private func expansion(for feed: Feed) -> Binding<Bool> {
+        Binding(
+            get: { !feed.isCollapsed },
+            set: { feed.isCollapsed = !$0 }
+        )
+    }
+
+    private func setAllCollapsed(_ collapsed: Bool) {
+        withAnimation {
+            for feed in feeds {
+                feed.isCollapsed = collapsed
+            }
+        }
+    }
+
     private var articleList: some View {
         let sections = feeds.map { (feed: $0, articles: visibleArticles(for: $0)) }
         let allEmpty = sections.allSatisfy { $0.articles.isEmpty }
@@ -191,7 +208,7 @@ struct ContentView: View {
                 // In All mode every feed stays visible (with a hint when it
                 // has nothing yet); filtered modes hide silent feeds.
                 if !articles.isEmpty || filter == .all {
-                    Section {
+                    Section(isExpanded: expansion(for: feed)) {
                         if articles.isEmpty {
                             Text("No articles yet")
                                 .font(.callout)
@@ -225,6 +242,12 @@ struct ContentView: View {
                         }
                     }
                     .contextMenu {
+                        Button(feed.isCollapsed ? "Expand" : "Collapse") {
+                            withAnimation { feed.isCollapsed.toggle() }
+                        }
+                        Button("Collapse All") { setAllCollapsed(true) }
+                        Button("Expand All") { setAllCollapsed(false) }
+                        Divider()
                         Button("Mark All as Read") {
                             for article in feed.articles {
                                 article.isRead = true
@@ -282,9 +305,11 @@ struct ContentView: View {
     }
 
     /// Visible articles across all feeds in display order (feeds sorted by
-    /// title, articles newest-first) — the traversal order for j/k.
+    /// title, articles newest-first) — the traversal order for j/k. Articles
+    /// under a collapsed feed are folded out of view, so navigation skips them
+    /// too; otherwise j/k could land the selection on an unrendered row.
     private var flattenedVisibleArticles: [Article] {
-        feeds.flatMap { visibleArticles(for: $0) }
+        feeds.flatMap { $0.isCollapsed ? [] : visibleArticles(for: $0) }
     }
 
     private func selectNextUnread() {

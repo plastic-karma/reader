@@ -8,11 +8,20 @@
 import SwiftUI
 import SwiftData
 
+enum ArticleFilter: String, CaseIterable, Identifiable {
+    case unread = "Unread"
+    case all = "All"
+    case starred = "Starred"
+
+    var id: Self { self }
+}
+
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(RefreshScheduler.self) private var scheduler
     @Query(sort: \Feed.title) private var feeds: [Feed]
     @State private var selectedArticle: Article?
+    @State private var filter: ArticleFilter = .unread
     @State private var isAddingFeed = false
     @State private var feedPendingDeletion: Feed?
 
@@ -54,9 +63,19 @@ struct ContentView: View {
             }
         } detail: {
             if let article = selectedArticle {
-                ArticleDetailPlaceholder(article: article)
+                ReadingPaneView(article: article)
             } else {
                 EmptyStateView(state: .noSelection)
+            }
+        }
+        .onChange(of: selectedArticle) { _, newValue in
+            newValue?.isRead = true
+        }
+        .onChange(of: filter) { _, newFilter in
+            // A filter switch is a navigation boundary: retention only papers
+            // over in-place mutations, not a selection that never matched.
+            if let article = selectedArticle, !matches(article, newFilter) {
+                selectedArticle = nil
             }
         }
         .sheet(isPresented: $isAddingFeed) {
@@ -80,22 +99,70 @@ struct ContentView: View {
         }
     }
 
+    private func matches(_ article: Article, _ filter: ArticleFilter) -> Bool {
+        switch filter {
+        case .unread: return !article.isRead
+        case .all: return true
+        case .starred: return article.isStarred
+        }
+    }
+
+    /// Filtered + sorted rows for one feed. The currently selected article is
+    /// always included so mark-as-read doesn't yank it out of the unread list
+    /// and drop the selection.
+    private func visibleArticles(for feed: Feed) -> [Article] {
+        feed.articles
+            .filter { $0 == selectedArticle || matches($0, filter) }
+            .sorted { $0.sortDate > $1.sortDate }
+    }
+
     private var articleList: some View {
+        let sections = feeds.map { (feed: $0, articles: visibleArticles(for: $0)) }
+        let allEmpty = sections.allSatisfy { $0.articles.isEmpty }
+        return VStack(spacing: 0) {
+            Picker("Filter", selection: $filter) {
+                ForEach(ArticleFilter.allCases) { choice in
+                    Text(choice.rawValue).tag(choice)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            // All mode never short-circuits: its sections are the only UI
+            // carrying a feed's error glyph and Delete Feed menu, which must
+            // stay reachable even when every feed is empty.
+            if allEmpty, filter == .unread {
+                EmptyStateView(state: .allCaughtUp)
+            } else if allEmpty, filter == .starred {
+                EmptyStateView(state: .noStarred)
+            } else {
+                filteredList(sections: sections)
+            }
+        }
+    }
+
+    private func filteredList(sections: [(feed: Feed, articles: [Article])]) -> some View {
         List(selection: $selectedArticle) {
-            ForEach(feeds) { feed in
-                Section {
-                    let articles = feed.articles.sorted { $0.sortDate > $1.sortDate }
-                    if articles.isEmpty {
-                        Text("No articles yet")
-                            .font(.callout)
-                            .foregroundStyle(.tertiary)
-                    } else {
-                        ForEach(articles) { article in
-                            ArticleRowView(article: article)
-                                .tag(article)
+            ForEach(sections, id: \.feed) { feed, articles in
+                // In All mode every feed stays visible (with a hint when it
+                // has nothing yet); filtered modes hide silent feeds.
+                if !articles.isEmpty || filter == .all {
+                    Section {
+                        if articles.isEmpty {
+                            Text("No articles yet")
+                                .font(.callout)
+                                .foregroundStyle(.tertiary)
+                        } else {
+                            ForEach(articles) { article in
+                                ArticleRowView(article: article)
+                                    .tag(article)
+                                    .contextMenu {
+                                        articleMenu(for: article)
+                                    }
+                            }
                         }
-                    }
-                } header: {
+                    } header: {
                     HStack(spacing: 6) {
                         Text(feed.title)
                             .lineLimit(1)
@@ -119,10 +186,21 @@ struct ContentView: View {
                             feedPendingDeletion = feed
                         }
                     }
+                    }
                 }
             }
         }
         .listStyle(.sidebar)
+    }
+
+    @ViewBuilder
+    private func articleMenu(for article: Article) -> some View {
+        Button(article.isRead ? "Mark as Unread" : "Mark as Read") {
+            article.isRead.toggle()
+        }
+        Button(article.isStarred ? "Unstar" : "Star") {
+            article.isStarred.toggle()
+        }
     }
 
     private func delete(_ feed: Feed) {
@@ -131,39 +209,6 @@ struct ContentView: View {
         }
         withAnimation {
             modelContext.delete(feed)
-        }
-    }
-}
-
-/// Minimal detail view until the M4 reading pane (WKWebView + cached images) lands.
-private struct ArticleDetailPlaceholder: View {
-    let article: Article
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(article.title)
-                    .font(.largeTitle.bold())
-                HStack(spacing: 8) {
-                    if let feedTitle = article.feed?.title {
-                        Text(feedTitle)
-                    }
-                    if let author = article.author {
-                        Text(author)
-                    }
-                    Text(article.sortDate, format: .dateTime.day().month().year())
-                }
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                Divider()
-                if let summary = article.summary, !summary.isEmpty {
-                    Text(summary)
-                        .font(.body)
-                        .textSelection(.enabled)
-                }
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

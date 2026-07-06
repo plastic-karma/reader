@@ -9,6 +9,7 @@ enum EmptyState {
     case noFeeds
     case noSelection
     case allCaughtUp
+    case noStarred
 }
 
 struct EmptyStateView: View {
@@ -38,6 +39,12 @@ struct EmptyStateView: View {
                 "All Caught Up",
                 systemImage: "checkmark.circle",
                 description: Text("No unread articles.")
+            )
+        case .noStarred:
+            ContentUnavailableView(
+                "No Starred Articles",
+                systemImage: "star",
+                description: Text("Star articles to find them here.")
             )
         }
     }

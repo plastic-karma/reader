@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: install-launch-agent.sh substitutes __REPO__ and __HOME__. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.reader.bridge-worker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO__/scripts/host/bridge-worker.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Caches/reader-bridge/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Caches/reader-bridge/launchd.err.log</string>
+</dict>
+</plist>

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Mock xcodebuild for Linux bridge tests. Behavior is driven by a control file
+# next to this script ("mock-control", shell syntax: sleep_s=N, exit_c=N) so the
+# test can steer each run without passing env through the worker's minimal child env.
+set -u
+here="$(cd "$(dirname "$0")" && pwd)"
+sleep_s=0
+exit_c=0
+[ -f "$here/mock-control" ] && . "$here/mock-control"
+echo "xcodebuild $*" >> "$here/invocations.log"
+[ "$sleep_s" != "0" ] && sleep "$sleep_s"
+case "${1:-}" in
+  -version) printf 'Xcode 16.4\nBuild version 16F6\n' ;;
+  -list)    printf '{"project":{"schemes":["Reader"]}}\n' ;;
+  *)        echo "MOCK-XCODEBUILD $*" ;;
+esac
+exit "$exit_c"

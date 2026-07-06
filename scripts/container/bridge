@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# Container-side bridge CLI: sends allowlisted Xcode commands to the Mac host via the
+# shared .bridge/ directory and streams the result back. Protocol: docs/bridge.md.
+set -u
+
+NAME_RE='^[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}$'
+DEST_VALUE_RE='^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$'
+UDID_RE='^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$'
+HEARTBEAT_STALE_SECONDS=15
+WORKER_HINT_SECONDS=10
+
+usage() {
+  cat <<'EOF'
+Usage:
+  bridge xcode-version | list-simulators | list-schemes | status
+  bridge build|test --scheme <S> [--configuration <C>] [--destination <D>]
+  bridge clean --scheme <S>
+  bridge boot-simulator --device <name-or-UDID>
+
+Options:
+  --timeout <seconds>        job execution timeout (per-verb default on the host)
+  --wait-timeout <seconds>   how long to wait for the host worker to claim the
+                             request before giving up (default 30)
+
+Runs on the Mac host via scripts/host/bridge-worker.sh. See docs/bridge.md.
+EOF
+}
+
+die() { echo "bridge: $*" >&2; exit 2; }
+
+bridge_dir() {
+  if [ -n "${BRIDGE_DIR:-}" ]; then
+    echo "$BRIDGE_DIR"
+  else
+    local root
+    root="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not in a git repo and BRIDGE_DIR unset"
+    echo "$root/.bridge"
+  fi
+}
+
+validate_name() { # value, what
+  case "$1" in -*) die "invalid $2 (may not start with '-'): $1" ;; esac
+  [[ "$1" =~ $NAME_RE ]] || die "invalid $2: $1"
+}
+
+validate_destination() {
+  case "$1" in -*) die "invalid destination (may not start with '-'): $1" ;; esac
+  local IFS=',' part key val
+  for part in $1; do
+    key="${part%%=*}"; val="${part#*=}"
+    [ "$key" != "$part" ] || die "invalid destination component: $part"
+    case "$key" in platform|name|OS|id|arch) ;; *) die "invalid destination key: $key" ;; esac
+    case "$val" in -*) die "invalid destination value: $val" ;; esac
+    [[ "$val" =~ $DEST_VALUE_RE ]] || die "invalid destination value: $val"
+  done
+}
+
+validate_device() {
+  case "$1" in -*) die "invalid device (may not start with '-'): $1" ;; esac
+  [[ "$1" =~ $UDID_RE ]] || [[ "$1" =~ $NAME_RE ]] || die "invalid device: $1"
+}
+
+heartbeat_age() { # prints heartbeat age in seconds, or "" if missing/unreadable
+  local hb="$1/worker/heartbeat.json" ts hb_epoch
+  [ -f "$hb" ] || return 0
+  ts="$(jq -r '.ts // empty' "$hb" 2>/dev/null)" || return 0
+  [ -n "$ts" ] || return 0
+  hb_epoch="$(date -u -d "$ts" +%s 2>/dev/null)" || return 0
+  echo "$(( $(date -u +%s) - hb_epoch ))"
+}
+
+cmd_status() {
+  local dir="$1" age hb="$1/worker/heartbeat.json"
+  local queued
+  queued="$(find "$dir/queue" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
+  age="$(heartbeat_age "$dir")"
+  if [ -n "$age" ] && [ "$age" -le "$HEARTBEAT_STALE_SECONDS" ]; then
+    echo "worker: alive ($(jq -r '"pid \(.pid) on \(.host), mode \(.mode)"' "$hb" 2>/dev/null), heartbeat ${age}s ago)"
+    echo "queue:  $queued pending request(s)"
+    return 0
+  fi
+  if [ -n "$age" ]; then
+    echo "worker: STALE (last heartbeat ${age}s ago)"
+  else
+    echo "worker: not running (no heartbeat)"
+  fi
+  echo "queue:  $queued pending request(s)"
+  echo "Start it on your Mac (not in the container): ./scripts/host/bridge-worker.sh"
+  return 1
+}
+
+main() {
+  command -v jq >/dev/null || die "jq is required (the devcontainer installs it)"
+  [ $# -ge 1 ] || { usage >&2; exit 2; }
+  local verb="$1"; shift
+
+  local scheme="" configuration="" destination="" device="" timeout="" wait_timeout=30
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --scheme)         scheme="${2:?}"; shift 2 ;;
+      --configuration)  configuration="${2:?}"; shift 2 ;;
+      --destination)    destination="${2:?}"; shift 2 ;;
+      --device)         device="${2:?}"; shift 2 ;;
+      --timeout)        timeout="${2:?}"; shift 2 ;;
+      --wait-timeout)   wait_timeout="${2:?}"; shift 2 ;;
+      -h|--help)        usage; exit 0 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+
+  local dir
+  dir="$(bridge_dir)" || exit 2
+
+  # Build args JSON per verb, validating locally (the worker re-validates).
+  local args_json='{}'
+  case "$verb" in
+    status) cmd_status "$dir"; exit $? ;;
+    xcode-version|list-simulators|list-schemes) ;;
+    build|test)
+      [ -n "$scheme" ] || die "$verb requires --scheme"
+      validate_name "$scheme" scheme
+      args_json="$(jq -n --arg s "$scheme" '{scheme:$s}')"
+      if [ -n "$configuration" ]; then
+        validate_name "$configuration" configuration
+        args_json="$(jq --arg c "$configuration" '. + {configuration:$c}' <<<"$args_json")"
+      fi
+      if [ -n "$destination" ]; then
+        validate_destination "$destination"
+        args_json="$(jq --arg d "$destination" '. + {destination:$d}' <<<"$args_json")"
+      fi
+      ;;
+    clean)
+      [ -n "$scheme" ] || die "clean requires --scheme"
+      validate_name "$scheme" scheme
+      args_json="$(jq -n --arg s "$scheme" '{scheme:$s}')"
+      ;;
+    boot-simulator)
+      [ -n "$device" ] || die "boot-simulator requires --device"
+      validate_device "$device"
+      args_json="$(jq -n --arg d "$device" '{device:$d}')"
+      ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown verb: $verb" ;;
+  esac
+
+  mkdir -p "$dir/queue" "$dir/jobs"
+  local id request tmp
+  id="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+  request="$(jq -n \
+    --arg id "$id" --arg verb "$verb" --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson args "$args_json" \
+    '{protocol_version: 1, id: $id, verb: $verb, args: $args, created_at: $created}')"
+  if [ -n "$timeout" ]; then
+    [[ "$timeout" =~ ^[0-9]+$ ]] || die "--timeout must be a positive integer"
+    request="$(jq --argjson t "$timeout" '. + {timeout_seconds: $t}' <<<"$request")"
+  fi
+  tmp="$dir/queue/$id.json.tmp"
+  printf '%s\n' "$request" > "$tmp"
+  mv "$tmp" "$dir/queue/$id.json"
+
+  local job="$dir/jobs/$id" log="$dir/jobs/$id/log"
+  local offset=0 start warned=0 cancelled=0
+
+  request_cancel() {
+    [ "$cancelled" -eq 1 ] && exit 130
+    cancelled=1
+    if [ -f "$dir/queue/$id.json" ]; then
+      rm -f "$dir/queue/$id.json"   # never claimed; nothing to cancel on the host
+      echo "bridge: cancelled (request withdrawn)" >&2
+      exit 130
+    fi
+    mkdir -p "$job"
+    : > "$job/cancel"
+    echo "bridge: cancel requested, waiting for the host to stop the job..." >&2
+  }
+  trap request_cancel INT TERM
+
+  drain_log() {
+    [ -f "$log" ] || return 0
+    local size
+    size="$(stat -c %s "$log" 2>/dev/null || stat -f %z "$log" 2>/dev/null)" || return 0
+    if [ "$size" -gt "$offset" ]; then
+      tail -c "+$((offset + 1))" "$log" | head -c "$((size - offset))"
+      offset="$size"
+    fi
+  }
+
+  start="$(date +%s)"
+  while :; do
+    if [ -f "$job/state" ] && [ "$(cat "$job/state" 2>/dev/null)" = "done" ]; then
+      break
+    fi
+    drain_log
+    if [ -f "$dir/queue/$id.json" ]; then  # not yet claimed
+      local waited=$(( $(date +%s) - start )) age
+      age="$(heartbeat_age "$dir")"
+      if [ "$warned" -eq 0 ] && [ "$waited" -ge "$WORKER_HINT_SECONDS" ] \
+         && { [ -z "$age" ] || [ "$age" -gt "$HEARTBEAT_STALE_SECONDS" ]; }; then
+        echo "bridge: no worker running on the host — on your Mac, run: ./scripts/host/bridge-worker.sh (see docs/bridge.md)" >&2
+        warned=1
+      fi
+      if [ "$waited" -ge "$wait_timeout" ]; then
+        rm -f "$dir/queue/$id.json"
+        echo "bridge: gave up after ${wait_timeout}s — no worker claimed the request" >&2
+        exit 7
+      fi
+    fi
+    sleep 0.25
+  done
+  drain_log
+
+  local result="$job/result.json" status exit_code error
+  status="$(jq -r '.status' "$result" 2>/dev/null)" || die "missing result for job $id"
+  exit_code="$(jq -r '.exit_code' "$result" 2>/dev/null)"
+  [[ "$exit_code" =~ ^[0-9]+$ ]] || exit_code=1
+  if [ "$status" != "done" ]; then
+    error="$(jq -r '.error // empty' "$result" 2>/dev/null)"
+    echo "bridge: $status${error:+: $error}" >&2
+  fi
+  exit "$exit_code"
+}
+
+main "$@"

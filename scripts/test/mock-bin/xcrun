@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Mock xcrun for Linux bridge tests. Same control-file mechanism as mock xcodebuild.
+set -u
+here="$(cd "$(dirname "$0")" && pwd)"
+sleep_s=0
+exit_c=0
+[ -f "$here/mock-control" ] && . "$here/mock-control"
+echo "xcrun $*" >> "$here/invocations.log"
+[ "$sleep_s" != "0" ] && sleep "$sleep_s"
+case "${1:-} ${2:-}" in
+  "simctl list") printf -- '-- iOS 18.5 --\n    iPhone 16 (AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE) (Shutdown)\n' ;;
+  "simctl boot") echo "MOCK-SIMCTL boot ${3:-}" ;;
+  *)             echo "MOCK-XCRUN $*" ;;
+esac
+exit "$exit_c"

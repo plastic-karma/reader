@@ -197,7 +197,7 @@ nonisolated enum HTMLProcessor {
         NSRange(string.startIndex..., in: string)
     }
 
-    private static func replacing(pattern: String, in string: String, with template: String) -> String {
+    static func replacing(pattern: String, in string: String, with template: String) -> String {
         compile(pattern).stringByReplacingMatches(in: string, range: fullRange(of: string), withTemplate: template)
     }
 
@@ -205,6 +205,18 @@ nonisolated enum HTMLProcessor {
         compile(pattern).matches(in: string, range: fullRange(of: string)).compactMap { match in
             Range(match.range, in: string).map { String(string[$0]) }
         }
+    }
+
+    /// The first capture group of the first match of `pattern`, or nil when
+    /// the pattern doesn't match. Compiled case-insensitive + dot-matches-all
+    /// like every other pattern here.
+    static func firstCapture(of pattern: String, in string: String) -> String? {
+        guard
+            let match = compile(pattern).firstMatch(in: string, range: fullRange(of: string)),
+            match.numberOfRanges > 1,
+            let range = Range(match.range(at: 1), in: string)
+        else { return nil }
+        return String(string[range])
     }
 
     private static func transformingMatches(

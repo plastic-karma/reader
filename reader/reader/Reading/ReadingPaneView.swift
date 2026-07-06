@@ -9,6 +9,7 @@ import SwiftUI
 /// Article chrome (native SwiftUI header for selection/typography) above the
 /// sandboxed web view that renders the cached article body.
 struct ReadingPaneView: View {
+    @Environment(LinkSaver.self) private var linkSaver
     let article: Article
 
     var body: some View {
@@ -19,7 +20,8 @@ struct ReadingPaneView: View {
             Divider()
             ArticleWebView(
                 articleID: article.persistentModelID,
-                html: ArticleTemplate.page(contentHTML: article.contentHTML)
+                html: ArticleTemplate.page(contentHTML: article.contentHTML),
+                onSaveLink: { linkSaver.save($0) }
             )
         }
         .toolbar {

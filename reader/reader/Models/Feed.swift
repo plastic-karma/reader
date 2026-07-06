@@ -47,4 +47,13 @@ extension Feed {
     var unreadCount: Int {
         articles.count { !$0.isRead }
     }
+
+    /// Sentinel URL of the hidden feed that stores saved-link snapshots.
+    /// Deliberately non-http: AddFeedSheet's URL normalizer admits only
+    /// http(s), so no user-entered feed can collide with it.
+    static let savedLinksFeedURL = URL(string: "reader-internal://saved-links")!
+
+    var isSavedLinksFeed: Bool {
+        sourceKind == SourceKind.savedLinks.rawValue
+    }
 }

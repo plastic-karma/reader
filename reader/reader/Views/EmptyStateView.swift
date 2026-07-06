@@ -10,6 +10,7 @@ enum EmptyState {
     case noSelection
     case allCaughtUp
     case noStarred
+    case noSavedLinks
 }
 
 struct EmptyStateView: View {
@@ -45,6 +46,12 @@ struct EmptyStateView: View {
                 "No Starred Articles",
                 systemImage: "star",
                 description: Text("Star articles to find them here.")
+            )
+        case .noSavedLinks:
+            ContentUnavailableView(
+                "No Saved Links",
+                systemImage: "bookmark",
+                description: Text("Right-click a link in any article and choose “Save Link”.")
             )
         }
     }

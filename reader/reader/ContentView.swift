@@ -10,50 +10,131 @@ import SwiftData
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
+    @Query(sort: \Feed.title) private var feeds: [Feed]
+    @State private var selectedArticle: Article?
+    @State private var isAddingFeed = false
+    @State private var feedPendingDeletion: Feed?
 
     var body: some View {
         NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
-                    }
+            Group {
+                if feeds.isEmpty {
+                    EmptyStateView(state: .noFeeds) { isAddingFeed = true }
+                } else {
+                    articleList
                 }
-                .onDelete(perform: deleteItems)
             }
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200)
+            .navigationSplitViewColumnWidth(min: 240, ideal: 320)
             .toolbar {
                 ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
+                    Button {
+                        isAddingFeed = true
+                    } label: {
+                        Label("Add Feed", systemImage: "plus")
                     }
+                    .keyboardShortcut("n", modifiers: .command)
                 }
             }
         } detail: {
-            Text("Select an item")
-        }
-    }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
+            if let article = selectedArticle {
+                ArticleDetailPlaceholder(article: article)
+            } else {
+                EmptyStateView(state: .noSelection)
             }
+        }
+        .sheet(isPresented: $isAddingFeed) {
+            AddFeedSheet()
+        }
+        .confirmationDialog(
+            "Delete “\(feedPendingDeletion?.title ?? "")”?",
+            isPresented: Binding(
+                get: { feedPendingDeletion != nil },
+                set: { if !$0 { feedPendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete Feed", role: .destructive) {
+                if let feed = feedPendingDeletion {
+                    delete(feed)
+                }
+            }
+        } message: {
+            Text("This removes the feed and all of its articles.")
+        }
+    }
+
+    private var articleList: some View {
+        List(selection: $selectedArticle) {
+            ForEach(feeds) { feed in
+                Section {
+                    let articles = feed.articles.sorted { $0.sortDate > $1.sortDate }
+                    if articles.isEmpty {
+                        Text("No articles yet")
+                            .font(.callout)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        ForEach(articles) { article in
+                            ArticleRowView(article: article)
+                                .tag(article)
+                        }
+                    }
+                } header: {
+                    Text(feed.title)
+                        .contextMenu {
+                            Button("Delete Feed…", role: .destructive) {
+                                feedPendingDeletion = feed
+                            }
+                        }
+                }
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
+    private func delete(_ feed: Feed) {
+        if selectedArticle?.feed == feed {
+            selectedArticle = nil
+        }
+        withAnimation {
+            modelContext.delete(feed)
+        }
+    }
+}
+
+/// Minimal detail view until the M4 reading pane (WKWebView + cached images) lands.
+private struct ArticleDetailPlaceholder: View {
+    let article: Article
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(article.title)
+                    .font(.largeTitle.bold())
+                HStack(spacing: 8) {
+                    if let feedTitle = article.feed?.title {
+                        Text(feedTitle)
+                    }
+                    if let author = article.author {
+                        Text(author)
+                    }
+                    Text(article.sortDate, format: .dateTime.day().month().year())
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                Divider()
+                if let summary = article.summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.body)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
 
 #Preview {
     ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
+        .modelContainer(for: [Feed.self, Article.self], inMemory: true)
 }

@@ -13,6 +13,7 @@ enum ArticleFilter: String, CaseIterable, Identifiable {
     case unread = "Unread"
     case all = "All"
     case starred = "Starred"
+    case saved = "Saved"
 
     var id: Self { self }
 }
@@ -20,6 +21,7 @@ enum ArticleFilter: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(RefreshScheduler.self) private var scheduler
+    @Environment(LinkSaver.self) private var linkSaver
     @Query(sort: \Feed.title) private var feeds: [Feed]
     @State private var selectedArticle: Article?
     @State private var filter: ArticleFilter = .unread
@@ -33,11 +35,7 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             Group {
-                if feeds.isEmpty {
-                    EmptyStateView(state: .noFeeds) { isAddingFeed = true }
-                } else {
-                    articleList
-                }
+                articleList
             }
             .navigationSplitViewColumnWidth(min: 240, ideal: 320)
             .toolbar {
@@ -51,7 +49,7 @@ struct ContentView: View {
                         } label: {
                             Label("Refresh All", systemImage: "arrow.clockwise")
                         }
-                        .disabled(feeds.isEmpty)
+                        .disabled(subscriptionFeeds.isEmpty)
                     }
                 }
                 ToolbarItem {
@@ -130,12 +128,35 @@ struct ContentView: View {
         }
     }
 
+    /// Kind-aware membership: saved-link articles live only under .saved and
+    /// subscription articles never do — this is what makes the
+    /// .onChange(of: filter) retention drop cross-kind selections.
     private func matches(_ article: Article, _ filter: ArticleFilter) -> Bool {
+        let isSaved = article.feed?.isSavedLinksFeed == true
         switch filter {
-        case .unread: return !article.isRead
-        case .all: return true
-        case .starred: return article.isStarred
+        case .unread: return !isSaved && !article.isRead
+        case .all: return !isSaved
+        case .starred: return !isSaved && article.isStarred
+        case .saved: return isSaved
         }
+    }
+
+    /// Everything the sidebar shows as feed sections. Filtered by exclusion
+    /// so future subscription kinds stay visible by default.
+    private var subscriptionFeeds: [Feed] {
+        feeds.filter { !$0.isSavedLinksFeed }
+    }
+
+    /// The hidden feed backing the Saved segment; nil until the first save.
+    private var savedFeed: Feed? {
+        feeds.first { $0.isSavedLinksFeed }
+    }
+
+    /// Saved links newest-first (sortDate == save time). Read state never
+    /// filters this list, so — unlike visibleArticles(for:) — no
+    /// selected-article escape hatch is needed for mark-as-read stability.
+    private var savedArticles: [Article] {
+        (savedFeed?.articles ?? []).sorted { $0.sortDate > $1.sortDate }
     }
 
     /// Filtered + sorted rows for one feed. The currently selected article is
@@ -158,16 +179,14 @@ struct ContentView: View {
 
     private func setAllCollapsed(_ collapsed: Bool) {
         withAnimation {
-            for feed in feeds {
+            for feed in subscriptionFeeds {
                 feed.isCollapsed = collapsed
             }
         }
     }
 
     private var articleList: some View {
-        let sections = feeds.map { (feed: $0, articles: visibleArticles(for: $0)) }
-        let allEmpty = sections.allSatisfy { $0.articles.isEmpty }
-        return VStack(spacing: 0) {
+        VStack(spacing: 0) {
             Picker("Filter", selection: $filter) {
                 ForEach(ArticleFilter.allCases) { choice in
                     Text(choice.rawValue).tag(choice)
@@ -177,29 +196,56 @@ struct ContentView: View {
             .labelsHidden()
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            // All mode never short-circuits: its sections are the only UI
-            // carrying a feed's error glyph and Delete Feed menu, which must
-            // stay reachable even when every feed is empty.
-            if allEmpty, filter == .unread {
-                EmptyStateView(state: .allCaughtUp)
-            } else if allEmpty, filter == .starred {
-                EmptyStateView(state: .noStarred)
+            if filter == .saved {
+                if savedArticles.isEmpty {
+                    EmptyStateView(state: .noSavedLinks)
+                } else {
+                    revealingSelection(of: savedList(savedArticles))
+                }
+            } else if subscriptionFeeds.isEmpty {
+                EmptyStateView(state: .noFeeds) { isAddingFeed = true }
             } else {
-                filteredList(sections: sections)
+                let sections = subscriptionFeeds.map { (feed: $0, articles: visibleArticles(for: $0)) }
+                let allEmpty = sections.allSatisfy { $0.articles.isEmpty }
+                // All mode never short-circuits: its sections are the only UI
+                // carrying a feed's error glyph and Delete Feed menu, which must
+                // stay reachable even when every feed is empty.
+                if allEmpty, filter == .unread {
+                    EmptyStateView(state: .allCaughtUp)
+                } else if allEmpty, filter == .starred {
+                    EmptyStateView(state: .noStarred)
+                } else {
+                    revealingSelection(of: list(sections: sections))
+                }
             }
         }
     }
 
-    private func filteredList(sections: [(feed: Feed, articles: [Article])]) -> some View {
+    /// Wraps a list so programmatic selection changes (j/k) scroll the
+    /// selected row into view. Shared by the sectioned subscription list and
+    /// the flat saved list.
+    private func revealingSelection(of listView: some View) -> some View {
         ScrollViewReader { proxy in
-            list(sections: sections)
-                .onChange(of: selectedArticle) { _, newValue in
-                    // j/k can move the selection offscreen; reveal it.
-                    if let newValue {
-                        proxy.scrollTo(newValue.persistentModelID)
-                    }
+            listView.onChange(of: selectedArticle) { _, newValue in
+                // j/k can move the selection offscreen; reveal it.
+                if let newValue {
+                    proxy.scrollTo(newValue.persistentModelID)
                 }
+            }
         }
+    }
+
+    private func savedList(_ articles: [Article]) -> some View {
+        List(selection: $selectedArticle) {
+            ForEach(articles) { article in
+                ArticleRowView(article: article)
+                    .tag(article)
+                    .contextMenu {
+                        savedArticleMenu(for: article)
+                    }
+            }
+        }
+        .listStyle(.sidebar)
     }
 
     private func list(sections: [(feed: Feed, articles: [Article])]) -> some View {
@@ -304,12 +350,16 @@ struct ContentView: View {
         }
     }
 
-    /// Visible articles across all feeds in display order (feeds sorted by
-    /// title, articles newest-first) — the traversal order for j/k. Articles
-    /// under a collapsed feed are folded out of view, so navigation skips them
-    /// too; otherwise j/k could land the selection on an unrendered row.
+    /// Visible articles in display order — the traversal order for j/k. In
+    /// the Saved view that's the flat saved list; otherwise feeds sorted by
+    /// title, articles newest-first, skipping collapsed feeds (folded
+    /// articles are out of view, so navigation must not land the selection
+    /// on an unrendered row).
     private var flattenedVisibleArticles: [Article] {
-        feeds.flatMap { $0.isCollapsed ? [] : visibleArticles(for: $0) }
+        if filter == .saved {
+            return savedArticles
+        }
+        return subscriptionFeeds.flatMap { $0.isCollapsed ? [] : visibleArticles(for: $0) }
     }
 
     private func selectNextUnread() {
@@ -337,6 +387,40 @@ struct ContentView: View {
         }
         Button(article.isStarred ? "Unstar" : "Star") {
             article.isStarred.toggle()
+        }
+    }
+
+    @ViewBuilder
+    private func savedArticleMenu(for article: Article) -> some View {
+        articleMenu(for: article)
+        if let link = article.link {
+            Button("Open in Browser") {
+                NSWorkspace.shared.open(link)
+            }
+            Button("Copy Link") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(link.absoluteString, forType: .string)
+            }
+            if article.downloadError != nil {
+                Button("Retry Download") {
+                    linkSaver.save(link)
+                }
+            }
+        }
+        Divider()
+        Button("Remove from Saved", role: .destructive) {
+            removeSaved(article)
+        }
+    }
+
+    private func removeSaved(_ article: Article) {
+        // Clear the selection before delete — the detail pane must never
+        // render a deleted model.
+        if selectedArticle == article {
+            selectedArticle = nil
+        }
+        withAnimation {
+            modelContext.delete(article)
         }
     }
 
@@ -380,4 +464,5 @@ private struct HostWindowReader: NSViewRepresentable {
     ContentView()
         .modelContainer(container)
         .environment(RefreshScheduler(modelContainer: container))
+        .environment(LinkSaver(modelContainer: container))
 }

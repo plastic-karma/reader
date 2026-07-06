@@ -31,7 +31,12 @@ actor RefreshEngine {
     }
 
     func refreshAll() async {
-        let ids = (try? modelContext.fetch(FetchDescriptor<Feed>()))?.map(\.persistentModelID) ?? []
+        // The hidden saved-links feed has a non-http sentinel URL; fetching
+        // it would only stamp a permanent lastError. Snapshots never
+        // auto-refresh.
+        let ids = ((try? modelContext.fetch(FetchDescriptor<Feed>())) ?? [])
+            .filter { !$0.isSavedLinksFeed }
+            .map(\.persistentModelID)
         guard !ids.isEmpty else { return }
         await withTaskGroup(of: Void.self) { group in
             var iterator = ids.makeIterator()
@@ -54,6 +59,8 @@ actor RefreshEngine {
         // Snapshot everything the network phase needs, then let go of the
         // model: the user may delete the feed while we're suspended.
         guard let snapshot = feedModel(for: feedID) else { return }
+        // Defense in depth for direct callers (refreshFeed after Add Feed).
+        guard !snapshot.isSavedLinksFeed else { return }
         let url = snapshot.feedURL
         let etag = snapshot.etag
         let lastModified = snapshot.lastModified

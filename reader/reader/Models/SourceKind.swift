@@ -9,4 +9,6 @@ import Foundation
 /// so adding kinds later (Substack, IMAP newsletters) needs no schema migration.
 nonisolated enum SourceKind: String, CaseIterable, Sendable {
     case rss
+    /// The hidden singleton feed that holds user-saved page snapshots.
+    case savedLinks
 }

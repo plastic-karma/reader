@@ -29,6 +29,10 @@ actor ImageCache {
     init() {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
+        // The request timeout only fires on idle; a dripping host would
+        // otherwise pin a refresh or a saved-page snapshot for minutes.
+        // 30 s is the absolute per-image budget.
+        configuration.timeoutIntervalForResource = 30
         session = URLSession(configuration: configuration)
         try? FileManager.default.createDirectory(
             at: Self.directoryURL, withIntermediateDirectories: true)

@@ -196,4 +196,20 @@ final class HTMLProcessorTests: XCTestCase {
         XCTAssertEqual(HTMLProcessor.plainTextExcerpt(from: "<p>Short note</p>", maxLength: 50), "Short note")
         XCTAssertEqual(HTMLProcessor.plainTextExcerpt(from: "Exact", maxLength: 5), "Exact")
     }
+
+    // MARK: - firstCapture
+
+    func testFirstCaptureReturnsFirstGroupAndNilWhenAbsent() {
+        let html = "<title>First</title><title>Second</title>"
+        XCTAssertEqual(
+            HTMLProcessor.firstCapture(of: "<title\\b[^>]*>(.*?)</title\\s*>", in: html),
+            "First"
+        )
+        // Case-insensitive like every other pattern in the processor.
+        XCTAssertEqual(
+            HTMLProcessor.firstCapture(of: "<TITLE\\b[^>]*>(.*?)</TITLE\\s*>", in: html),
+            "First"
+        )
+        XCTAssertNil(HTMLProcessor.firstCapture(of: "<h1>(.*?)</h1>", in: html))
+    }
 }

@@ -25,6 +25,7 @@ struct readerApp: App {
     }()
 
     @State private var scheduler = RefreshScheduler(modelContainer: readerApp.sharedModelContainer)
+    @State private var linkSaver = LinkSaver(modelContainer: readerApp.sharedModelContainer)
 
     var body: some Scene {
         WindowGroup {
@@ -32,6 +33,7 @@ struct readerApp: App {
         }
         .modelContainer(Self.sharedModelContainer)
         .environment(scheduler)
+        .environment(linkSaver)
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Refresh All Feeds") {
@@ -53,12 +55,6 @@ struct readerApp: App {
     }
 
     private func markAllRead() {
-        let context = Self.sharedModelContainer.mainContext
-        let unread = (try? context.fetch(
-            FetchDescriptor<Article>(predicate: #Predicate { !$0.isRead })
-        )) ?? []
-        for article in unread {
-            article.isRead = true
-        }
+        Article.markAllRead(in: Self.sharedModelContainer.mainContext)
     }
 }

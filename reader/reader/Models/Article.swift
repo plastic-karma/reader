@@ -27,6 +27,12 @@ nonisolated final class Article {
     var isRead: Bool
     var isStarred: Bool
     var feed: Feed?
+    /// Saved-link snapshots only; nil for feed articles and after a
+    /// successful (re-)download. Short human-readable failure reason.
+    var downloadError: String? = nil
+    /// Saved-link snapshots only: when the page content was last downloaded
+    /// successfully. nil for feed articles and for never-completed saves.
+    var downloadedAt: Date? = nil
 
     init(
         stableID: String,
@@ -57,5 +63,17 @@ extension Article {
     /// Newest-first list ordering, falling back to arrival time for undated items.
     var sortDate: Date {
         publishedAt ?? firstSeenAt
+    }
+
+    /// ⌘⇧A: marks every unread *feed* article read. Saved-link articles live
+    /// only under the Saved view and are deliberately excluded.
+    nonisolated static func markAllRead(in context: ModelContext) {
+        let unread = (try? context.fetch(
+            FetchDescriptor<Article>(predicate: #Predicate { !$0.isRead })
+        )) ?? []
+        let savedKind = SourceKind.savedLinks.rawValue
+        for article in unread where article.feed?.sourceKind != savedKind {
+            article.isRead = true
+        }
     }
 }

@@ -21,6 +21,9 @@ nonisolated final class Feed {
     var lastError: String?
     var etag: String?
     var lastModified: String?
+    /// Sidebar UI state: whether this feed's article list is folded away.
+    /// Persisted so the fold survives relaunches and filter switches.
+    var isCollapsed: Bool = false
 
     @Relationship(deleteRule: .cascade, inverse: \Article.feed)
     var articles: [Article] = []

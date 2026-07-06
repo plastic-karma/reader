@@ -204,6 +204,14 @@ final class TokenProviderTests: XCTestCase {
         }
     }
 
+    func testKeychainErrorSurfacesTheActualStatus() {
+        let error = KeychainStore.KeychainError(status: -34018)
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(
+            description.contains("-34018"),
+            "The OSStatus must be visible — the default NSError bridge hides it as 'error 1'")
+    }
+
     func testSignOutMidSessionIsReportedAsNotSignedInNextCall() async throws {
         let store = InMemoryTokenStore(expiredTokens())
         let transport = TokenTransport(status: 400, body: invalidGrant)

@@ -107,6 +107,7 @@ client that loads remote images, and strictly better than most.
 | Sign-in required again after ~a week (`invalid_grant`) | Consent screen still in **Testing** — publish it to Production (step 3.4), then sign in again. |
 | "Google didn't return a refresh token" | A previous grant already exists. Remove the app at [myaccount.google.com/permissions](https://myaccount.google.com/permissions), then sign in again. |
 | "Not an iOS-type Google OAuth client ID" | The pasted ID doesn't end in `.apps.googleusercontent.com` — copy the **client ID**, not the client secret or project ID, from an **iOS-type** client. |
+| "Keychain error -34018 …" at sign-in, or macOS asks permission to access the keychain after rebuilds | The build is ad-hoc signed (no Development Team), so the modern data-protection keychain is unavailable; reader falls back to the login keychain automatically. To get the modern keychain and stop per-rebuild prompts, set a Team (a free personal one works) under Signing & Capabilities in Xcode and rebuild. |
 | Sidebar shows ⚠️ "Gmail: sign in required" | No tokens stored (first run, or after sign-out) — Settings → Newsletters → Sign in. |
 | Sidebar shows ⚠️ "Gmail: session expired" | The grant was revoked or expired — sign in again from Settings. |
 | A newsletter still sits in the Gmail inbox | Archiving happens at sync time (no push). It clears on the next refresh; the sidebar refresh interval is in Settings → General. |

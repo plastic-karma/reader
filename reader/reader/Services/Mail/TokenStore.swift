@@ -26,26 +26,70 @@ nonisolated protocol TokenStoring: Sendable {
 }
 
 /// One generic-password item holding the JSON-encoded tokens.
+///
+/// Prefers the modern data-protection keychain, which requires the app to
+/// be signed with an application identifier (a Development Team). Builds
+/// without one — ad-hoc bridge/dev builds — get errSecMissingEntitlement
+/// from every data-protection call, so those fall back to the legacy login
+/// keychain, which has no signing requirement. Load checks both places,
+/// clear purges both, so switching signing later can't strand tokens.
 nonisolated struct KeychainStore: TokenStoring {
 
-    struct KeychainError: Error, Equatable {
+    struct KeychainError: Error, LocalizedError, Equatable {
         let status: OSStatus
+
+        var errorDescription: String? {
+            let detail = SecCopyErrorMessageString(status, nil) as String? ?? "unknown"
+            return "Keychain error \(status): \(detail)"
+        }
     }
 
     var service = "plastic-karma.reader.gmail"
     var account = "oauth"
 
-    private var baseQuery: [String: Any] {
-        [
+    private func baseQuery(dataProtection: Bool) -> [String: Any] {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecUseDataProtectionKeychain as String: true,
         ]
+        if dataProtection {
+            query[kSecUseDataProtectionKeychain as String] = true
+        }
+        return query
     }
 
     func load() throws -> StoredTokens? {
-        var query = baseQuery
+        do {
+            if let tokens = try loadItem(dataProtection: true) {
+                return tokens
+            }
+        } catch let error as KeychainError where error.status == errSecMissingEntitlement {
+            return try loadItem(dataProtection: false)
+        }
+        // Signed builds still fall through: a token saved by an earlier
+        // ad-hoc build lives in the login keychain.
+        return try loadItem(dataProtection: false)
+    }
+
+    func save(_ tokens: StoredTokens) throws {
+        let data = try JSONEncoder().encode(tokens)
+        do {
+            try saveItem(data, dataProtection: true)
+            // Don't leave a stale legacy copy behind to shadow future loads.
+            try? clearItem(dataProtection: false)
+        } catch let error as KeychainError where error.status == errSecMissingEntitlement {
+            try saveItem(data, dataProtection: false)
+        }
+    }
+
+    func clear() throws {
+        try clearItem(dataProtection: true)
+        try clearItem(dataProtection: false)
+    }
+
+    private func loadItem(dataProtection: Bool) throws -> StoredTokens? {
+        var query = baseQuery(dataProtection: dataProtection)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
@@ -61,24 +105,27 @@ nonisolated struct KeychainStore: TokenStoring {
         }
     }
 
-    func save(_ tokens: StoredTokens) throws {
-        let data = try JSONEncoder().encode(tokens)
+    private func saveItem(_ data: Data, dataProtection: Bool) throws {
         // Delete-then-add is the simplest correct upsert for a single item.
-        SecItemDelete(baseQuery as CFDictionary)
-        var attributes = baseQuery
+        SecItemDelete(baseQuery(dataProtection: dataProtection) as CFDictionary)
+        var attributes = baseQuery(dataProtection: dataProtection)
         attributes[kSecValueData as String] = data
-        // AfterFirstUnlock: the background refresh timer keeps syncing while
-        // the screen is locked.
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        if dataProtection {
+            // AfterFirstUnlock: the background refresh timer keeps syncing
+            // while the screen is locked. (Data-protection-only attribute.)
+            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        }
         let status = SecItemAdd(attributes as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw KeychainError(status: status)
         }
     }
 
-    func clear() throws {
-        let status = SecItemDelete(baseQuery as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
+    private func clearItem(dataProtection: Bool) throws {
+        let status = SecItemDelete(baseQuery(dataProtection: dataProtection) as CFDictionary)
+        guard status == errSecSuccess
+            || status == errSecItemNotFound
+            || status == errSecMissingEntitlement else {
             throw KeychainError(status: status)
         }
     }

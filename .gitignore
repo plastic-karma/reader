@@ -71,3 +71,4 @@ fastlane/test_output
 
 # Container-to-host bridge runtime state (see docs/bridge.md)
 .bridge/
+__pycache__/

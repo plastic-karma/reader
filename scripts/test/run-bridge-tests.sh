@@ -14,7 +14,9 @@ mock="$work/mock-bin"
 export BRIDGE_DIR="$work/bridge"
 state="$work/state"
 
-mkdir -p "$fake_root/Reader.xcodeproj" "$BRIDGE_DIR/queue" "$BRIDGE_DIR/jobs"
+# Mirror the real layout: project one level below the repo root, with the
+# embedded project.xcworkspace every .xcodeproj bundle contains.
+mkdir -p "$fake_root/app/Reader.xcodeproj/project.xcworkspace" "$BRIDGE_DIR/queue" "$BRIDGE_DIR/jobs"
 cp -a "$script_dir/mock-bin" "$mock"
 chmod +x "$mock/xcodebuild" "$mock/xcrun"
 
@@ -59,6 +61,34 @@ start_worker() {
   worker_pid=$!
   wait_for "worker heartbeat" 10 test -f "$BRIDGE_DIR/worker/heartbeat.json"
 }
+
+echo "== 0. project discovery (root-level, nested, workspace preference)"
+discover() { # repo layout dirs..., expects flag+path on stdout
+  local root="$work/discover-$RANDOM"
+  local d
+  for d in "$@"; do mkdir -p "$root/$d"; done
+  BRIDGE_REPO_ROOT="$root" BRIDGE_DIR="$root/.bridge" BRIDGE_STATE_DIR="$root/state" \
+    python3 - "$worker" <<'EOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("bw", sys.argv[1])
+bw = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bw)
+try:
+    print(" ".join(bw.discover_project(bw.Config())))
+except bw.Rejected as e:
+    print(f"rejected: {e}")
+EOF
+}
+out="$(discover "Reader.xcodeproj/project.xcworkspace")"
+check "root-level project found" "$(grep -q -- '-project .*/Reader.xcodeproj$' <<<"$out"; echo $?)"
+out="$(discover "app/Reader.xcodeproj/project.xcworkspace")"
+check "nested project found (embedded workspace ignored)" "$(grep -q -- '-project .*/app/Reader.xcodeproj$' <<<"$out"; echo $?)"
+out="$(discover "app/Reader.xcodeproj/project.xcworkspace" "Reader.xcworkspace")"
+check "standalone workspace preferred over project" "$(grep -q -- '-workspace .*/Reader.xcworkspace$' <<<"$out"; echo $?)"
+out="$(discover "a/One.xcodeproj" "b/Two.xcodeproj")"
+check "ambiguous projects rejected" "$(grep -q 'rejected: multiple' <<<"$out"; echo $?)"
+out="$(discover "empty-dir")"
+check "missing project rejected" "$(grep -q 'rejected: no Xcode project' <<<"$out"; echo $?)"
 
 echo "== 1. no worker: client gives up with exit 7 and a helpful message"
 out="$("$client" xcode-version --wait-timeout 2 2>&1)"; rc=$?

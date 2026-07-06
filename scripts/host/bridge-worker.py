@@ -105,17 +105,25 @@ def validate_device(value):
 
 
 def discover_project(cfg):
-    """Find the single .xcworkspace (preferred) or .xcodeproj at the repo root."""
+    """Find the single .xcworkspace (preferred) or .xcodeproj at the repo root
+    or one directory level below it (e.g. reader/reader.xcodeproj)."""
     for suffix, flag in ((".xcworkspace", "-workspace"), (".xcodeproj", "-project")):
-        matches = sorted(p for p in cfg.repo_root.glob(f"*{suffix}") if p.is_dir())
+        matches = sorted(
+            p
+            for pattern in (f"*{suffix}", f"*/*{suffix}")
+            for p in cfg.repo_root.glob(pattern)
+            # .xcodeproj bundles embed a project.xcworkspace; that one is not
+            # a standalone workspace and must not shadow the project itself.
+            if p.is_dir() and not p.parent.name.endswith(".xcodeproj")
+        )
         if len(matches) > 1:
-            raise Rejected(f"multiple {suffix} entries at repo root; keep exactly one")
+            raise Rejected(f"multiple {suffix} entries found; keep exactly one")
         if matches:
             path = matches[0].resolve()
-            if cfg.repo_root not in path.parents and path != cfg.repo_root:
+            if cfg.repo_root not in path.parents:
                 raise Rejected("project path escapes repo root")
             return [flag, str(path)]
-    raise Rejected("no Xcode project found at repo root")
+    raise Rejected("no Xcode project found at repo root or one level below")
 
 
 def xcodebuild_action(action, needs_destination):

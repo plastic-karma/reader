@@ -176,10 +176,11 @@ Argument validation (enforced by the worker; the client duplicates it for fast f
   (e.g. scheme `-derivedDataPath /Users/...`).
 - `boot-simulator` treats `simctl` exit 149 ("already booted") as success.
 
-The worker **discovers** the `*.xcworkspace` (preferred) or `*.xcodeproj` at the repo
-root itself and realpath-checks it is inside the repo — requests never carry paths.
-Until an Xcode project exists in the repo, project verbs return
-`rejected: no Xcode project found`; `xcode-version` and `list-simulators` still work.
+The worker **discovers** the `*.xcworkspace` (preferred) or `*.xcodeproj` itself — at
+the repo root or one directory level below it (e.g. `reader/reader.xcodeproj`) — and
+realpath-checks it is inside the repo. Requests never carry paths. Until an Xcode
+project exists in the repo, project verbs return `rejected: no Xcode project found`;
+`xcode-version` and `list-simulators` still work.
 
 ## Security model
 
@@ -230,8 +231,9 @@ stale-request cleanup. Other env seams used by tests: `BRIDGE_DIR` (queue locati
   on the Mac (not in the container). `bridge status` shows heartbeat age.
 - **Heartbeat always stale** — container/host clock skew. Docker Desktop normally syncs
   clocks; restarting Docker Desktop fixes drift after sleep.
-- **`rejected: no Xcode project found`** — the repo root has no `.xcworkspace`/`.xcodeproj`
-  yet, or more than one. Create the Xcode project at the repo root on the host.
+- **`rejected: no Xcode project found`** — no `.xcworkspace`/`.xcodeproj` exists at the
+  repo root or one level below it, or more than one was found. Keep exactly one project
+  (or workspace) within the top two directory levels.
 - **Worker exits immediately: "another worker holds the lock"** — a worker is already
   running (maybe via launchd). `launchctl list | grep reader` / `uninstall-launch-agent.sh`.
 - **Builds can't see local changes** — make sure the host worker runs in the same checkout

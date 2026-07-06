@@ -36,15 +36,21 @@ struct ArticleWebView: NSViewRepresentable {
         // Refresh the closure before the reload guard: updateNSView runs on
         // unrelated state changes where only the closure identity is new.
         webView.onSaveLink = onSaveLink
-        // SwiftUI calls this on unrelated state changes too; reload only
-        // when a different article is shown to avoid flicker/scroll loss.
-        guard context.coordinator.loadedArticleID != articleID else { return }
+        // SwiftUI calls this on unrelated state changes too; reload only when
+        // a different article is shown — or when the same article's HTML
+        // changes under us, which the save-link pipeline does in place
+        // (placeholder → snapshot, failure → retry) — to avoid flicker and
+        // scroll loss on everything else.
+        guard context.coordinator.loadedArticleID != articleID
+            || context.coordinator.loadedHTML != html else { return }
         context.coordinator.loadedArticleID = articleID
+        context.coordinator.loadedHTML = html
         webView.loadHTMLString(html, baseURL: nil)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var loadedArticleID: PersistentIdentifier?
+        var loadedHTML: String?
 
         func webView(
             _ webView: WKWebView,

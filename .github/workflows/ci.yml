@@ -1,0 +1,100 @@
+name: CI
+
+# Builds the app and runs the unit-test suite on every push to main and every PR.
+# This is a native macOS app (SDKROOT = macosx, deployment target 26.3, built with
+# Xcode 26.4.1), so it runs on a macOS 26 runner and tests on `platform=macOS` —
+# no simulator required.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs for the same ref (e.g. new pushes to an open PR).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build & Test (macOS)
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    env:
+      PROJECT: reader/reader.xcodeproj
+      SCHEME: reader
+      CONFIGURATION: Debug
+      DESTINATION: platform=macOS
+      DERIVED_DATA: DerivedData
+      # macos-26's default is already Xcode 26.4.1 (the toolchain this project was
+      # created with). Pin it so builds stay reproducible if GitHub moves the default.
+      XCODE_VERSION: "26.4.1"
+      # Stream xcodebuild output live instead of buffering it.
+      NSUnbufferedIO: "YES"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        run: |
+          set -euo pipefail
+          desired="/Applications/Xcode_${XCODE_VERSION}.app"
+          if [ -d "$desired" ]; then
+            sudo xcode-select -s "$desired/Contents/Developer"
+          else
+            echo "::warning::Xcode ${XCODE_VERSION} not found on runner; falling back to newest installed Xcode 26.x"
+            newest="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n1 || true)"
+            if [ -n "$newest" ]; then sudo xcode-select -s "$newest/Contents/Developer"; fi
+          fi
+          xcodebuild -version
+          swift --version
+
+      - name: Show available destinations
+        run: xcodebuild -project "$PROJECT" -scheme "$SCHEME" -showdestinations || true
+
+      # build-for-testing + test-without-building compiles once, then runs the tests,
+      # keeping the "build" and "test" phases as separate, legible steps.
+      # CODE_SIGNING_ALLOWED=NO lets the sandboxed app build & launch for testing on a
+      # runner that has no signing identity (the app runs unsandboxed, which is fine for tests).
+      - name: Build for testing
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -destination "$DESTINATION" \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            | tee build.log
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -destination "$DESTINATION" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            | tee test.log
+
+      - name: Upload build & test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-and-test-results
+          path: |
+            TestResults.xcresult
+            build.log
+            test.log
+          if-no-files-found: ignore
+          retention-days: 14

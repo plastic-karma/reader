@@ -3,6 +3,11 @@
 iOS/macOS app, developed with Claude Code running inside a dev container while Xcode
 builds run on the Mac host through a limited file-based bridge.
 
+The app is a focused macOS reader: RSS/Atom feeds, saved-page snapshots, and
+**Gmail newsletters** — register sender + subject-regex rules and matching
+messages appear as offline-rendered articles while being archived out of your
+inbox (setup: [docs/gmail-setup.md](docs/gmail-setup.md)).
+
 ## Quickstart
 
 1. **Host (Mac):** start the bridge worker in this checkout:

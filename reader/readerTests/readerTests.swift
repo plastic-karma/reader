@@ -2,37 +2,67 @@
 //  readerTests.swift
 //  readerTests
 //
-//  Created by Benni Rogge on 7/5/26.
-//
 
 import XCTest
+import SwiftData
 @testable import reader
 
-final class readerTests: XCTestCase {
+final class ModelSchemaTests: XCTestCase {
 
-    override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
+    @MainActor
+    private func makeInMemoryContainer() throws -> ModelContainer {
+        try ModelContainer(
+            for: Feed.self, Article.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
+    @MainActor
+    func testInsertFeedAndArticleRoundTrip() throws {
+        let container = try makeInMemoryContainer()
+        let context = container.mainContext
+
+        let feed = Feed(feedURL: URL(string: "https://example.com/feed.xml")!, title: "Example")
+        context.insert(feed)
+        let article = Article(stableID: "id-1", title: "Hello, world")
+        article.feed = feed
+        try context.save()
+
+        let feeds = try context.fetch(FetchDescriptor<Feed>())
+        XCTAssertEqual(feeds.count, 1)
+        XCTAssertEqual(feeds.first?.articles.count, 1)
+        XCTAssertEqual(feeds.first?.articles.first?.title, "Hello, world")
+        XCTAssertEqual(feeds.first?.unreadCount, 1)
     }
 
-    func testExample() throws {
-        // This is an example of a functional test case.
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // Any test you write for XCTest can be annotated as throws and async.
-        // Mark your test throws to produce an unexpected failure when your test encounters an uncaught error.
-        // Mark your test async to allow awaiting for asynchronous code to complete. Check the results with assertions afterwards.
-        // XCTest Documentation
-        // https://developer.apple.com/documentation/xctest
-    }
+    @MainActor
+    func testFeedDeleteCascadesToArticles() throws {
+        let container = try makeInMemoryContainer()
+        let context = container.mainContext
 
-    func testPerformanceExample() throws {
-        // This is an example of a performance test case.
-        self.measure {
-            // Put the code you want to measure the time of here.
+        let feed = Feed(feedURL: URL(string: "https://example.com/feed.xml")!, title: "Example")
+        context.insert(feed)
+        for i in 0..<3 {
+            let article = Article(stableID: "id-\(i)", title: "Article \(i)")
+            article.feed = feed
         }
+        try context.save()
+
+        context.delete(feed)
+        try context.save()
+
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Feed>()).count, 0)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Article>()).count, 0)
     }
 
+    @MainActor
+    func testArticleSortDateFallsBackToFirstSeen() throws {
+        let firstSeen = Date(timeIntervalSince1970: 1_000_000)
+        let undated = Article(stableID: "a", title: "Undated", firstSeenAt: firstSeen)
+        XCTAssertEqual(undated.sortDate, firstSeen)
+
+        let published = Date(timeIntervalSince1970: 2_000_000)
+        let dated = Article(stableID: "b", title: "Dated", publishedAt: published, firstSeenAt: firstSeen)
+        XCTAssertEqual(dated.sortDate, published)
+    }
 }

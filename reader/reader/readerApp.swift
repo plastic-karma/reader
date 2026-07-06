@@ -10,9 +10,10 @@ import SwiftData
 
 @main
 struct readerApp: App {
-    var sharedModelContainer: ModelContainer = {
+    private static let sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            Feed.self,
+            Article.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -23,10 +24,41 @@ struct readerApp: App {
         }
     }()
 
+    @State private var scheduler = RefreshScheduler(modelContainer: readerApp.sharedModelContainer)
+
     var body: some Scene {
         WindowGroup {
             ContentView()
         }
-        .modelContainer(sharedModelContainer)
+        .modelContainer(Self.sharedModelContainer)
+        .environment(scheduler)
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button("Refresh All Feeds") {
+                    scheduler.refreshNow()
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(scheduler.isRefreshing)
+                Button("Mark All as Read") {
+                    markAllRead()
+                }
+                .keyboardShortcut("a", modifiers: [.command, .shift])
+            }
+        }
+
+        Settings {
+            SettingsView()
+                .environment(scheduler)
+        }
+    }
+
+    private func markAllRead() {
+        let context = Self.sharedModelContainer.mainContext
+        let unread = (try? context.fetch(
+            FetchDescriptor<Article>(predicate: #Predicate { !$0.isRead })
+        )) ?? []
+        for article in unread {
+            article.isRead = true
+        }
     }
 }

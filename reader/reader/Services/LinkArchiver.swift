@@ -32,6 +32,11 @@ actor LinkArchiver {
     /// and render as CSP-blocked placeholders (same as any failed download).
     private static let maxImageDownloads = 50
 
+    /// Saved pages routinely reference dozens of images on hosts that
+    /// black-hole a non-browser user agent; downloading them one at a time
+    /// serializes those 30 s timeouts into a minutes-long "Downloading…".
+    private static let maxConcurrentImageFetches = 6
+
     private let fetcher = PageFetcher()
     private let imageCache = ImageCache()
     /// Coalesces concurrent saves of the same canonical URL (ImageCache's
@@ -189,11 +194,26 @@ actor LinkArchiver {
     private func prepare(_ page: PageFetcher.FetchedPage, savedURL: URL) async -> PreparedSnapshot {
         let sanitized = HTMLProcessor.sanitize(html: page.html)
         let extracted = PageExtractor.extract(fromSanitizedHTML: sanitized, sourceURL: savedURL)
+        let remotes = Array(
+            HTMLProcessor.extractImageURLs(html: extracted.contentHTML, baseURL: page.finalURL)
+                .prefix(Self.maxImageDownloads))
+        // Sliding window (the refreshAll pattern): failed hosts time out in
+        // parallel instead of stacking their 30 s budgets end to end.
         var mapping: [String: String] = [:]
-        let remotes = HTMLProcessor.extractImageURLs(html: extracted.contentHTML, baseURL: page.finalURL)
-        for remote in remotes.prefix(Self.maxImageDownloads) {
-            if let asset = await imageCache.cache(remote) {
-                mapping[remote.absoluteString] = "\(LocalAssetSchemeHandler.scheme)://\(asset)"
+        await withTaskGroup(of: (String, String?).self) { group in
+            var iterator = remotes.makeIterator()
+            var started = 0
+            while started < Self.maxConcurrentImageFetches, let remote = iterator.next() {
+                group.addTask { [imageCache] in (remote.absoluteString, await imageCache.cache(remote)) }
+                started += 1
+            }
+            while let (remote, asset) = await group.next() {
+                if let asset {
+                    mapping[remote] = "\(LocalAssetSchemeHandler.scheme)://\(asset)"
+                }
+                if let next = iterator.next() {
+                    group.addTask { [imageCache] in (next.absoluteString, await imageCache.cache(next)) }
+                }
             }
         }
         let content = mapping.isEmpty

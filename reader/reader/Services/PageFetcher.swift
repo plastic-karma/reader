@@ -51,20 +51,28 @@ nonisolated struct PageFetcher: Sendable {
         // no URLCache (a snapshot is deliberately a point-in-time copy).
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
+        // The request timeout only fires on idle; the resource timeout is
+        // the absolute budget for the whole page, so a dripping server
+        // can't hold "Downloading…" open indefinitely.
+        configuration.timeoutIntervalForResource = 60
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpAdditionalHeaders = ["User-Agent": "reader/1.0 (macOS RSS reader)"]
         session = URLSession(configuration: configuration)
     }
 
-    /// GET the page, stream the body with an early-abort size cap, validate
-    /// status + content type, decode the charset. Redirects are followed by
-    /// URLSession; the response's URL is surfaced as `finalURL`.
+    /// GET the page, validate status + content type + size, decode the
+    /// charset. Redirects are followed by URLSession; the response's URL is
+    /// surfaced as `finalURL`.
     func fetch(url: URL) async throws -> FetchedPage {
         var request = URLRequest(url: url)
         request.setValue(
             "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
             forHTTPHeaderField: "Accept")
-        let (bytes, response) = try await session.bytes(for: request)
+        // data(for:) like FeedFetcher — the declared-length pre-check
+        // rejects honest oversize responses up front, the post-check catches
+        // liars, and the resource timeout bounds how much a server can push
+        // in the meantime.
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw FetchError.notHTTP
         }
@@ -76,16 +84,9 @@ nonisolated struct PageFetcher: Sendable {
         if let mime = http.mimeType?.lowercased(), !Self.allowedMIMETypes.contains(mime) {
             throw FetchError.notHTML(mime)
         }
-        guard http.expectedContentLength <= Int64(Self.maxBytes) else {  // -1 (unknown) passes
+        guard http.expectedContentLength <= Int64(Self.maxBytes),  // -1 (unknown) passes
+              data.count <= Self.maxBytes else {
             throw FetchError.tooLarge
-        }
-        var data = Data()
-        data.reserveCapacity(min(Int(max(http.expectedContentLength, 0)), Self.maxBytes))
-        for try await byte in bytes {
-            data.append(byte)
-            if data.count > Self.maxBytes {
-                throw FetchError.tooLarge
-            }
         }
         return FetchedPage(
             html: Self.decodeHTML(data: data, textEncodingName: http.textEncodingName),

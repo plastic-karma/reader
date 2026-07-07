@@ -16,6 +16,7 @@ enum EmptyState {
 struct EmptyStateView: View {
     let state: EmptyState
     var action: (() -> Void)?
+    var secondaryAction: (() -> Void)?
 
     var body: some View {
         switch state {
@@ -23,10 +24,13 @@ struct EmptyStateView: View {
             ContentUnavailableView {
                 Label("No Feeds", systemImage: "dot.radiowaves.up.forward")
             } description: {
-                Text("Add an RSS or Atom feed to start reading.")
+                Text("Add an RSS feed or a Gmail newsletter rule to start reading.")
             } actions: {
                 if let action {
                     Button("Add Feed", action: action)
+                }
+                if let secondaryAction {
+                    Button("Add Newsletter Rule", action: secondaryAction)
                 }
             }
         case .noSelection:

@@ -26,6 +26,7 @@ struct ContentView: View {
     @State private var selectedArticle: Article?
     @State private var filter: ArticleFilter = .unread
     @State private var isAddingFeed = false
+    @State private var newsletterSheetTarget: NewsletterSheetTarget?
     @State private var feedPendingDeletion: Feed?
     @State private var feedPendingRename: Feed?
     @State private var renameText = ""
@@ -65,12 +66,17 @@ struct ContentView: View {
                     .disabled(totalUnreadCount == 0)
                 }
                 ToolbarItem {
-                    Button {
-                        isAddingFeed = true
+                    Menu {
+                        Button("Add Feed…") {
+                            isAddingFeed = true
+                        }
+                        .keyboardShortcut("n", modifiers: .command)
+                        Button("Add Newsletter Rule…") {
+                            newsletterSheetTarget = .new
+                        }
                     } label: {
-                        Label("Add Feed", systemImage: "plus")
+                        Label("Add", systemImage: "plus")
                     }
-                    .keyboardShortcut("n", modifiers: .command)
                 }
             }
             .task {
@@ -105,6 +111,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isAddingFeed) {
             AddFeedSheet()
+        }
+        .sheet(item: $newsletterSheetTarget) { target in
+            NewsletterRuleSheet(target: target)
         }
         .confirmationDialog(
             "Delete “\(feedPendingDeletion?.title ?? "")”?",
@@ -222,7 +231,10 @@ struct ContentView: View {
                     revealingSelection(of: savedList(savedArticles))
                 }
             } else if subscriptionFeeds.isEmpty {
-                EmptyStateView(state: .noFeeds) { isAddingFeed = true }
+                EmptyStateView(
+                    state: .noFeeds,
+                    action: { isAddingFeed = true },
+                    secondaryAction: { newsletterSheetTarget = .new })
             } else {
                 let sections = subscriptionFeeds.map { (feed: $0, articles: visibleArticles(for: $0)) }
                 let allEmpty = sections.allSatisfy { $0.articles.isEmpty }
@@ -323,9 +335,17 @@ struct ContentView: View {
                             renameText = feed.title
                             feedPendingRename = feed
                         }
-                        Button("Copy Feed URL") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(feed.feedURL.absoluteString, forType: .string)
+                        if feed.isNewsletterFeed {
+                            // The sentinel URL is meaningless to copy; rule
+                            // editing takes that slot instead.
+                            Button("Edit Newsletter Rule…") {
+                                newsletterSheetTarget = .edit(feed)
+                            }
+                        } else {
+                            Button("Copy Feed URL") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(feed.feedURL.absoluteString, forType: .string)
+                            }
                         }
                         Divider()
                         Button("Delete Feed…", role: .destructive) {

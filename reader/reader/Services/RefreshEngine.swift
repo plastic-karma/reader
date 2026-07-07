@@ -14,8 +14,25 @@ actor RefreshEngine {
 
     private static let maxConcurrentFetches = 4
 
+    // Newsletter sync tuning. The overlap re-lists a day behind the
+    // watermark, absorbing clock skew and delayed delivery; dedupe by
+    // stableID makes the re-list free.
+    private static let newsletterBackfillDays = 30
+    private static let newsletterWatermarkOverlap: TimeInterval = 24 * 3600
+    private static let maxNewsletterMessagesPerSync = 200
+
+    // Newsletters routinely carry dozens of images; cap the downloads and
+    // fetch them in a sliding window (the LinkArchiver pattern) so one dead
+    // host can't stack 30 s timeouts end to end.
+    private static let maxImagesPerArticle = 50
+    private static let maxConcurrentImageFetches = 6
+
     private let fetcher = FeedFetcher()
     private let imageCache = ImageCache()
+    /// Production mail provider. Inline default because @ModelActor
+    /// generates init(modelContainer:); construction is side-effect-free.
+    /// Tests bypass it entirely via refreshNewsletter(feedID:using:).
+    private let mailClient: any MailProviderClient = GmailMailClient.live()
 
     /// Article payload prepared entirely off the model graph — image
     /// downloads happen while building these, so no SwiftData model is ever
@@ -61,6 +78,12 @@ actor RefreshEngine {
         guard let snapshot = feedModel(for: feedID) else { return }
         // Defense in depth for direct callers (refreshFeed after Add Feed).
         guard !snapshot.isSavedLinksFeed else { return }
+        // First real source-kind dispatch: newsletter feeds have a sentinel
+        // URL and sync through a mail provider, not HTTP+FeedParser.
+        if snapshot.isNewsletterFeed {
+            await refreshNewsletter(feedID: feedID, using: mailClient)
+            return
+        }
         let url = snapshot.feedURL
         let etag = snapshot.etag
         let lastModified = snapshot.lastModified
@@ -137,17 +160,160 @@ actor RefreshEngine {
         }
     }
 
+    /// One newsletter rule feed: list matching headers → regex-filter →
+    /// fetch new bodies → prepare (same sanitize/image pipeline as RSS) →
+    /// insert + save → archive in the mailbox → bookkeeping. Also the test
+    /// seam: tests pass a stub provider.
+    ///
+    /// Ordering invariants:
+    /// - Articles are durable *before* the mailbox is touched — a crash in
+    ///   between leaves mail in the inbox, which self-heals next sync; the
+    ///   reverse order could archive mail the reader never stored.
+    /// - The watermark advances only when ingest persisted AND archiving
+    ///   succeeded, so failed archives always stay inside the re-list
+    ///   window and missed messages are never skipped.
+    func refreshNewsletter(feedID: PersistentIdentifier, using client: any MailProviderClient) async {
+        guard let snapshot = feedModel(for: feedID), snapshot.isNewsletterFeed else { return }
+        let rule = snapshot.newsletterRule
+        let knownIDs = Set(snapshot.articles.map(\.stableID))
+        let watermark = snapshot.newsletterLastSyncedAt
+        let feedURL = snapshot.feedURL
+        // Captured before listing so messages arriving mid-sync fall after
+        // the next watermark and get re-listed.
+        let syncStartedAt = Date.now
+
+        // Value phase — models released, mirroring the RSS path.
+        var prepared: [PreparedArticle] = []
+        var archiveIDs: [String] = []
+        var failure: String?
+        do {
+            guard let rule else {
+                throw MailProviderError.invalidRule("Newsletter rule is incomplete — edit it to set a sender")
+            }
+            // Compile before any network call so a bad pattern fails fast.
+            let regex = try NewsletterRule.compiledSubjectRegex(from: rule.subjectPattern)
+            let since = watermark.map { $0.addingTimeInterval(-Self.newsletterWatermarkOverlap) }
+                ?? syncStartedAt.addingTimeInterval(-TimeInterval(Self.newsletterBackfillDays) * 86400)
+            let headers = try await client.messageHeaders(
+                matching: MailQuery(sender: rule.sender, since: since))
+            let matched = headers.filter {
+                NewsletterRule.matches(subject: $0.subject, compiled: regex)
+            }
+            let fresh = matched
+                .filter { !knownIDs.contains($0.id) }
+                .sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
+                .prefix(Self.maxNewsletterMessagesPerSync)
+            var items: [ParsedItem] = []
+            items.reserveCapacity(fresh.count)
+            for header in fresh {
+                // One failed body fetch fails the whole sync: the watermark
+                // stays put, so nothing is ever skipped — the RSS path's
+                // all-or-nothing fetch semantics.
+                items.append(GmailMessageParser.parsedItem(
+                    from: try await client.message(id: header.id)))
+            }
+            prepared = await prepare(items, feedURL: feedURL)
+            if rule.archiveAfterIngest {
+                // Self-healing set: new matches AND known-but-still-inboxed
+                // ones (a failed markProcessed keeps isUnprocessed true).
+                // Messages older than `since` are never listed, so a rule
+                // can never archive mail that predates it.
+                archiveIDs = matched.filter(\.isUnprocessed).map(\.id)
+            }
+        } catch {
+            failure = shortDescription(of: error)
+        }
+
+        // Model phase 1 — re-resolve (the feed may have been deleted while
+        // we were suspended; bail without touching the mailbox) and persist
+        // the articles.
+        guard let feed = feedModel(for: feedID) else { return }
+        if let failure {
+            feed.lastError = failure
+            feed.lastFetchedAt = Date.now
+            saveRecordingFailure(feedID: feedID)
+            return
+        }
+        insert(prepared, into: feed, homepageURL: nil)
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            if let survivor = feedModel(for: feedID) {
+                survivor.lastError = "Could not save: \(error.localizedDescription)"
+                survivor.lastFetchedAt = Date.now
+                try? modelContext.save()
+            }
+            return
+        }
+
+        // Mailbox phase — archive + mark read, best-effort per sync.
+        var archiveFailure: String?
+        if !archiveIDs.isEmpty {
+            do {
+                try await client.markProcessed(ids: archiveIDs)
+            } catch {
+                archiveFailure = shortDescription(of: error)
+            }
+        }
+
+        // Model phase 2 — bookkeeping after the archive suspension.
+        guard let survivor = feedModel(for: feedID) else { return }
+        if let archiveFailure {
+            survivor.lastError = archiveFailure
+        } else {
+            survivor.lastError = nil
+            survivor.newsletterLastSyncedAt = syncStartedAt
+        }
+        survivor.lastFetchedAt = Date.now
+        saveRecordingFailure(feedID: feedID)
+    }
+
+    /// Save, falling back to the rollback-then-record-the-error pattern the
+    /// RSS path uses, so a failed save never poisons this long-lived context.
+    private func saveRecordingFailure(feedID: PersistentIdentifier) {
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            if let feed = feedModel(for: feedID) {
+                feed.lastError = "Could not save: \(error.localizedDescription)"
+                feed.lastFetchedAt = Date.now
+                try? modelContext.save()
+            }
+        }
+    }
+
     /// Sanitize, cache images locally, rewrite img sources — pure value work,
     /// safe to suspend on downloads.
     private func prepare(_ items: [ParsedItem], feedURL: URL) async -> [PreparedArticle] {
         var prepared: [PreparedArticle] = []
         for item in items {
-            let sanitized = HTMLProcessor.sanitize(html: item.contentHTML)
+            let sanitized = HTMLProcessor.strippingTrackingPixels(
+                html: HTMLProcessor.sanitize(html: item.contentHTML))
             let base = item.link ?? feedURL
+            let remotes = Array(
+                HTMLProcessor.extractImageURLs(html: sanitized, baseURL: base)
+                    .prefix(Self.maxImagesPerArticle))
             var mapping: [String: String] = [:]
-            for remote in HTMLProcessor.extractImageURLs(html: sanitized, baseURL: base) {
-                if let asset = await imageCache.cache(remote) {
-                    mapping[remote.absoluteString] = "\(LocalAssetSchemeHandler.scheme)://\(asset)"
+            await withTaskGroup(of: (String, String?).self) { group in
+                var iterator = remotes.makeIterator()
+                var started = 0
+                while started < Self.maxConcurrentImageFetches, let remote = iterator.next() {
+                    group.addTask { [imageCache] in
+                        (remote.absoluteString, await imageCache.cache(remote))
+                    }
+                    started += 1
+                }
+                while let (remote, asset) = await group.next() {
+                    if let asset {
+                        mapping[remote] = "\(LocalAssetSchemeHandler.scheme)://\(asset)"
+                    }
+                    if let next = iterator.next() {
+                        group.addTask { [imageCache] in
+                            (next.absoluteString, await imageCache.cache(next))
+                        }
+                    }
                 }
             }
             let content = mapping.isEmpty
@@ -204,6 +370,8 @@ actor RefreshEngine {
 
     private func shortDescription(of error: Error) -> String {
         switch error {
+        case let error as MailProviderError:
+            return error.errorDescription ?? "Gmail sync failed"
         case let error as FeedFetcher.FetchError:
             return error.errorDescription ?? "Fetch failed"
         case FeedParseError.notAFeed:

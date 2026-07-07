@@ -1,6 +1,6 @@
 # Newsletters from Gmail — Design & Implementation Plan
 
-> **Status:** implemented (M1–M5, one PR per milestone: #7 #8 #9 #10 #11, `bridge test` green after each). Remaining human smoke tests: create the Google Cloud OAuth client per `docs/gmail-setup.md`, sign in, add a rule for a real newsletter, confirm the article renders offline and the message is archived + read in Gmail.
+> **Status:** implemented (M1–M5, one PR per milestone: #7 #8 #12 #10 #11 — M3 landed via #12 after #9 was mis-merged onto a feature branch during the chain merge; `bridge test` green after each). Remaining human smoke tests: create the Google Cloud OAuth client per `docs/gmail-setup.md`, sign in, add a rule for a real newsletter, confirm the article renders offline and the message is archived + read in Gmail.
 
 ## Context
 

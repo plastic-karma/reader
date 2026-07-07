@@ -73,6 +73,7 @@ All offline, in-memory containers, fixed dates through `now:`/`calendar:` parame
 ## Risks / deferred
 
 - **Lightweight migration** (new entity + optional to-one on Article) is additive and matches the Feed-fields precedent, but on-disk migration is CI-untestable → manual store-copy smoke at M1.
+- **Toolchain landmine (found in M3)**: deallocating any app-module `@Observable` crashes with a malloc double-free (see CLAUDE.md). Tests leak `EditionContext` instances on purpose; production is unaffected (env objects are process-lifetime).
 - **Actor reentrancy**: publish methods must stay await-free; an inserted `await` reopens sweep/numbering interleaving (comment-guarded).
 - **DST/timezones**: Calendar-driven grid, Berlin-fixture-tested; a timezone change between wakes just recomputes on the next wake.
 - Deferred: deleting/re-cutting editions (nullify rule already returns articles to the pending pool), edition-aware notifications, surfacing failed publish saves (currently bounded silent retry).

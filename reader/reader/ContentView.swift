@@ -22,7 +22,10 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(RefreshScheduler.self) private var scheduler
     @Environment(LinkSaver.self) private var linkSaver
+    @Environment(EditionContext.self) private var editionContext
+    @Environment(\.openSettings) private var openSettings
     @Query(sort: \Feed.title) private var feeds: [Feed]
+    @Query(sort: \Edition.number, order: .reverse) private var editions: [Edition]
     @State private var selectedArticle: Article?
     @State private var filter: ArticleFilter = .unread
     @State private var isAddingFeed = false
@@ -41,6 +44,9 @@ struct ContentView: View {
             .navigationSplitViewColumnWidth(min: 240, ideal: 320)
             .toolbar {
                 ToolbarItem {
+                    modePicker
+                }
+                ToolbarItem {
                     if scheduler.isRefreshing {
                         ProgressView()
                             .controlSize(.small)
@@ -58,7 +64,10 @@ struct ContentView: View {
                     // duplicating it would make the shortcut ambiguous.
                     Button {
                         withAnimation {
-                            Article.markAllRead(in: modelContext)
+                            // activeEdition is nil in global mode (full sweep)
+                            // and non-nil in edition mode whenever this button
+                            // is enabled (totalUnreadCount is 0 without one).
+                            Article.markAllRead(in: modelContext, within: activeEdition)
                         }
                     } label: {
                         Label("Mark All as Read", systemImage: "checkmark.circle")
@@ -102,12 +111,19 @@ struct ContentView: View {
         .onChange(of: selectedArticle) { _, newValue in
             newValue?.isRead = true
         }
-        .onChange(of: filter) { _, newFilter in
-            // A filter switch is a navigation boundary: retention only papers
-            // over in-place mutations, not a selection that never matched.
-            if let article = selectedArticle, !matches(article, newFilter) {
-                selectedArticle = nil
-            }
+        // Filter, mode, and edition switches are navigation boundaries:
+        // retention only papers over in-place mutations, not a selection
+        // that never matched. Deliberately no guard on `editions` changing —
+        // when a publish auto-advances follow-latest, the article being read
+        // stays selected via the retention clause.
+        .onChange(of: filter) { _, _ in
+            dropSelectionIfHidden()
+        }
+        .onChange(of: editionContext.mode) { _, _ in
+            dropSelectionIfHidden()
+        }
+        .onChange(of: editionContext.selection) { _, _ in
+            dropSelectionIfHidden()
         }
         .sheet(isPresented: $isAddingFeed) {
             AddFeedSheet()
@@ -150,16 +166,36 @@ struct ContentView: View {
     }
 
     /// Kind-aware membership: saved-link articles live only under .saved and
-    /// subscription articles never do — this is what makes the
-    /// .onChange(of: filter) retention drop cross-kind selections.
-    private func matches(_ article: Article, _ filter: ArticleFilter) -> Bool {
+    /// subscription articles never do — this is what makes the selection
+    /// retention drop cross-kind selections. `edition` is the edition-mode
+    /// gate (nil = no gate, i.e. global mode); saved links bypass it, so the
+    /// Saved view is identical in both modes.
+    private func matches(_ article: Article, _ filter: ArticleFilter, within edition: Edition?) -> Bool {
         let isSaved = article.feed?.isSavedLinksFeed == true
+        if !isSaved, let edition, article.edition != edition {
+            return false
+        }
         switch filter {
         case .unread: return !isSaved && !article.isRead
         case .all: return !isSaved
         case .starred: return !isSaved && article.isStarred
         case .saved: return isSaved
         }
+    }
+
+    private var isEditionMode: Bool {
+        editionContext.mode == .editions
+    }
+
+    /// The gate `matches` applies: nil in global mode. Also nil in edition
+    /// mode with no editions at all — `editionModeIsEmpty` short-circuits
+    /// every consumer before that nil could mean "show everything".
+    private var activeEdition: Edition? {
+        isEditionMode ? editionContext.resolve(from: editions) : nil
+    }
+
+    private var editionModeIsEmpty: Bool {
+        isEditionMode && editions.isEmpty
     }
 
     /// Everything the sidebar shows as feed sections. Filtered by exclusion
@@ -171,8 +207,12 @@ struct ContentView: View {
     /// Unread across all subscriptions — drives the mark-all-read toolbar
     /// button's disabled state. Saved links never count: they are excluded
     /// from the global action too, so button and action stay in agreement.
+    /// In edition mode both the count and the action scope to the active
+    /// edition (and zero with no editions keeps the button disabled, so it
+    /// can never fall back to marking the world read).
     private var totalUnreadCount: Int {
-        subscriptionFeeds.reduce(0) { $0 + $1.unreadCount }
+        if editionModeIsEmpty { return 0 }
+        return subscriptionFeeds.reduce(0) { $0 + $1.unreadCount(within: activeEdition) }
     }
 
     /// The hidden feed backing the Saved segment; nil until the first save.
@@ -192,8 +232,23 @@ struct ContentView: View {
     /// and drop the selection.
     private func visibleArticles(for feed: Feed) -> [Article] {
         feed.articles
-            .filter { $0 == selectedArticle || matches($0, filter) }
+            .filter { $0 == selectedArticle || matches($0, filter, within: activeEdition) }
             .sorted { $0.sortDate > $1.sortDate }
+    }
+
+    /// Global ↔ Editions lens switch. Lives in the toolbar (not the sidebar
+    /// stack) so global mode's sidebar stays pixel-identical to today; the
+    /// menu-bar View commands (⌘1/⌘2) mirror it.
+    private var modePicker: some View {
+        @Bindable var editionContext = editionContext
+        return Picker("View Mode", selection: $editionContext.mode) {
+            Label("Global", systemImage: "tray.full")
+                .tag(ViewMode.global)
+            Label("Editions", systemImage: "newspaper")
+                .tag(ViewMode.editions)
+        }
+        .pickerStyle(.segmented)
+        .help("Switch between all articles and editions")
     }
 
     /// Drives a section's disclosure triangle. Stored inverted so a brand-new
@@ -224,6 +279,9 @@ struct ContentView: View {
             .labelsHidden()
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
+            if isEditionMode, filter != .saved, !editions.isEmpty {
+                editionBar
+            }
             if filter == .saved {
                 if savedArticles.isEmpty {
                     EmptyStateView(state: .noSavedLinks)
@@ -231,17 +289,34 @@ struct ContentView: View {
                     revealingSelection(of: savedList(savedArticles))
                 }
             } else if subscriptionFeeds.isEmpty {
+                // Root cause first: with no feeds at all, onboarding beats
+                // the no-editions state.
                 EmptyStateView(
                     state: .noFeeds,
                     action: { isAddingFeed = true },
                     secondaryAction: { newsletterSheetTarget = .new })
+            } else if editionModeIsEmpty {
+                EmptyStateView(
+                    state: .noEditions,
+                    action: { createEditionNow() },
+                    secondaryAction: { openSettings() })
             } else {
                 let sections = subscriptionFeeds.map { (feed: $0, articles: visibleArticles(for: $0)) }
                 let allEmpty = sections.allSatisfy { $0.articles.isEmpty }
                 // All mode never short-circuits: its sections are the only UI
                 // carrying a feed's error glyph and Delete Feed menu, which must
-                // stay reachable even when every feed is empty.
-                if allEmpty, filter == .unread {
+                // stay reachable even when every feed is empty. (In edition
+                // mode that management lens is global mode's job — see
+                // list(sections:) — so empty editions do short-circuit.)
+                if allEmpty, isEditionMode {
+                    if filter == .unread {
+                        EmptyStateView(state: .editionCaughtUp)
+                    } else if filter == .starred {
+                        EmptyStateView(state: .noStarred)
+                    } else {
+                        EmptyStateView(state: .emptyEdition)
+                    }
+                } else if allEmpty, filter == .unread {
                     EmptyStateView(state: .allCaughtUp)
                 } else if allEmpty, filter == .starred {
                     EmptyStateView(state: .noStarred)
@@ -250,6 +325,49 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    /// Edition-mode masthead: which edition is on screen, the back-catalog
+    /// picker, and the manual publish action. Hidden on the Saved segment
+    /// (saved links are editionless) and while no editions exist (the
+    /// .noEditions state owns that surface).
+    private var editionBar: some View {
+        @Bindable var editionContext = editionContext
+        return HStack {
+            Menu {
+                Picker("Edition", selection: $editionContext.selection) {
+                    ForEach(editions) { edition in
+                        Text(edition.displayLabel())
+                            .tag(pickerSelection(for: edition))
+                    }
+                }
+                .pickerStyle(.inline)
+                Divider()
+                Button("Create Edition Now") {
+                    createEditionNow()
+                }
+                .disabled(scheduler.isCreatingEdition)
+            } label: {
+                Label(activeEdition?.displayLabel() ?? "Editions", systemImage: "newspaper")
+                    .lineLimit(1)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+    }
+
+    /// The newest edition's picker row tags `.latest`, so choosing it
+    /// re-arms follow-newest instead of pinning; every other row pins.
+    private func pickerSelection(for edition: Edition) -> EditionSelection {
+        edition === editions.first ? .latest : .specific(edition.persistentModelID)
+    }
+
+    private func createEditionNow() {
+        scheduler.createEditionNow()
+        // Show what was just made: the @Query advances this to the new
+        // edition as soon as the engine's save lands.
+        editionContext.selection = .latest
     }
 
     /// Wraps a list so programmatic selection changes (j/k) scroll the
@@ -283,8 +401,11 @@ struct ContentView: View {
         List(selection: $selectedArticle) {
             ForEach(sections, id: \.feed) { feed, articles in
                 // In All mode every feed stays visible (with a hint when it
-                // has nothing yet); filtered modes hide silent feeds.
-                if !articles.isEmpty || filter == .all {
+                // has nothing yet); filtered modes hide silent feeds. Edition
+                // mode hides them even under All — a newspaper shows only
+                // sections that ran, and feed management (error glyph,
+                // Delete) stays one toggle away in global mode.
+                if !articles.isEmpty || (filter == .all && !isEditionMode) {
                     Section(isExpanded: expansion(for: feed)) {
                         if articles.isEmpty {
                             Text("No articles yet")
@@ -309,8 +430,9 @@ struct ContentView: View {
                                 .help(lastError)
                         }
                         Spacer()
-                        if feed.unreadCount > 0 {
-                            Text("\(feed.unreadCount)")
+                        let unreadCount = feed.unreadCount(within: activeEdition)
+                        if unreadCount > 0 {
+                            Text("\(unreadCount)")
                                 .font(.caption)
                                 .monospacedDigit()
                                 .padding(.horizontal, 6)
@@ -327,10 +449,10 @@ struct ContentView: View {
                         Divider()
                         Button("Mark All as Read") {
                             withAnimation {
-                                feed.markAllRead()
+                                feed.markAllRead(within: activeEdition)
                             }
                         }
-                        .disabled(feed.unreadCount == 0)
+                        .disabled(feed.unreadCount(within: activeEdition) == 0)
                         Button("Rename…") {
                             renameText = feed.title
                             feedPendingRename = feed
@@ -399,7 +521,25 @@ struct ContentView: View {
         if filter == .saved {
             return savedArticles
         }
+        // The no-editions onboarding state renders no rows, so j/k must
+        // not be able to select into the hidden pending pool.
+        if editionModeIsEmpty {
+            return []
+        }
         return subscriptionFeeds.flatMap { $0.isCollapsed ? [] : visibleArticles(for: $0) }
+    }
+
+    /// Shared guard for every navigation boundary (filter, mode, or edition
+    /// switch): drop a selection that is no longer visible.
+    private func dropSelectionIfHidden() {
+        guard let article = selectedArticle else { return }
+        if editionModeIsEmpty, article.feed?.isSavedLinksFeed != true {
+            selectedArticle = nil
+            return
+        }
+        if !matches(article, filter, within: activeEdition) {
+            selectedArticle = nil
+        }
     }
 
     private func selectNextUnread() {
@@ -505,4 +645,5 @@ private struct HostWindowReader: NSViewRepresentable {
         .modelContainer(container)
         .environment(RefreshScheduler(modelContainer: container))
         .environment(LinkSaver(modelContainer: container))
+        .environment(EditionContext())
 }

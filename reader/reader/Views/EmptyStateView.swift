@@ -11,10 +11,16 @@ enum EmptyState {
     case allCaughtUp
     case noStarred
     case noSavedLinks
+    case noEditions
+    case editionCaughtUp
+    case emptyEdition
 }
 
 struct EmptyStateView: View {
     let state: EmptyState
+    /// Extra secondary line under the description — .noEditions shows the
+    /// live "N articles waiting · next edition …" caption here.
+    var detail: String?
     var action: (() -> Void)?
     var secondaryAction: (() -> Void)?
 
@@ -56,6 +62,34 @@ struct EmptyStateView: View {
                 "No Saved Links",
                 systemImage: "bookmark",
                 description: Text("Right-click a link in any article and choose “Save Link”.")
+            )
+        case .noEditions:
+            ContentUnavailableView {
+                Label("No Editions Yet", systemImage: "newspaper")
+            } description: {
+                Text("Articles gather here until an edition is published. Create one now, or pick a schedule in Settings.")
+                if let detail {
+                    Text(detail)
+                }
+            } actions: {
+                if let action {
+                    Button("Create Edition Now", action: action)
+                }
+                if let secondaryAction {
+                    Button("Edition Settings…", action: secondaryAction)
+                }
+            }
+        case .editionCaughtUp:
+            ContentUnavailableView(
+                "Edition Read",
+                systemImage: "checkmark.circle",
+                description: Text("You've read everything in this edition.")
+            )
+        case .emptyEdition:
+            ContentUnavailableView(
+                "Empty Edition",
+                systemImage: "newspaper",
+                description: Text("This edition has no articles.")
             )
         }
     }

@@ -60,4 +60,8 @@ Runs the real worker + real client against mock `xcodebuild`/`xcrun` shims in `s
 - Write ordering is load-bearing: `result.json` is written *before* `state` becomes `done`; all state/request writes are tmp + atomic rename. Preserve this in any protocol change.
 - Client-side validation in `bridge` duplicates the worker's for fast feedback — keep the two in sync.
 - Env seams for testing: `BRIDGE_DIR`, `BRIDGE_REPO_ROOT`, `BRIDGE_STATE_DIR`, `BRIDGE_XCODEBUILD`, `BRIDGE_XCRUN`.
+
+### Toolchain landmine: app-module `@Observable` deallocation
+
+Deallocating **any** app-module `@MainActor @Observable` object (RefreshScheduler, GmailAccountController, EditionContext, …) crashes the process with `malloc: *** error for object …: pointer being freed was not allocated` under the current toolchain (Xcode 26.4.1, app target's `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`; identical classes compiled in the test target are fine). The app never notices because `readerApp` holds these objects for the process lifetime. **In tests, never let one deallocate** — leak it deliberately (`_ = Unmanaged.passRetained(object)`; see `EditionContextTests.makeLeakedContext()`). If a test suite dies with that malloc message and no assertion output, this is almost certainly why. Revisit on toolchain updates.
 - Security note: the container can edit `scripts/host/*` since the repo tree is shared; the model relies on the host reviewing `git diff scripts/host/` before (re)starting the worker. Don't weaken worker-side validation on the assumption the client is trusted — it isn't.

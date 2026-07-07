@@ -29,9 +29,11 @@
       shouldUseLaunchSchemeArgsEnv = "YES"
       shouldAutocreateTestPlan = "YES">
       <Testables>
+         <!-- Serial on purpose: the bridge streams xcodebuild's console, and
+              parallel test clones swallow assertion messages, making remote
+              failures undiagnosable from the container. -->
          <TestableReference
-            skipped = "NO"
-            parallelizable = "YES">
+            skipped = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "6F4DD8DB2FFB652C009AFF23"

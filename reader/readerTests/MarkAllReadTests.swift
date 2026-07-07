@@ -15,16 +15,30 @@ final class MarkAllReadTests: XCTestCase {
     @MainActor
     private func makeContainer() throws -> ModelContainer {
         try ModelContainer(
-            for: Feed.self, Article.self,
+            for: Feed.self, Article.self, Edition.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
     }
 
     @MainActor
-    private func makeFeed(_ host: String, in container: ModelContainer) -> Feed {
-        let feed = Feed(feedURL: URL(string: "https://\(host)/feed.xml")!, title: host)
+    private func makeFeed(
+        _ host: String,
+        kind: SourceKind = .rss,
+        in container: ModelContainer
+    ) -> Feed {
+        let url = kind == .savedLinks
+            ? Feed.savedLinksFeedURL
+            : URL(string: "https://\(host)/feed.xml")!
+        let feed = Feed(feedURL: url, title: host, sourceKind: kind)
         container.mainContext.insert(feed)
         return feed
+    }
+
+    @MainActor
+    private func makeEdition(_ number: Int, in container: ModelContainer) -> Edition {
+        let edition = Edition(number: number, publishedAt: .now, scheduledFor: .now, isManual: false)
+        container.mainContext.insert(edition)
+        return edition
     }
 
     @MainActor
@@ -99,5 +113,75 @@ final class MarkAllReadTests: XCTestCase {
         XCTAssertTrue(unread.isEmpty)
         XCTAssertEqual(feedA.unreadCount, 0)
         XCTAssertEqual(feedB.unreadCount, 0)
+    }
+
+    // MARK: - Edition scoped
+
+    @MainActor
+    func testEditionScopedGlobalMarkAllReadMarksOnlyThatEdition() throws {
+        let container = try makeContainer()
+        let feed = makeFeed("a.example", in: container)
+        let saved = makeFeed("saved", kind: .savedLinks, in: container)
+        let editionA = makeEdition(1, in: container)
+        let editionB = makeEdition(2, in: container)
+        let inA = addArticle("a-1", to: feed, in: container)
+        inA.edition = editionA
+        let inB = addArticle("a-2", to: feed, in: container)
+        inB.edition = editionB
+        let pending = addArticle("a-3", to: feed, in: container)
+        let savedArticle = addArticle("s-1", to: saved, in: container)
+
+        Article.markAllRead(in: container.mainContext, within: editionA)
+
+        XCTAssertTrue(inA.isRead)
+        XCTAssertFalse(inB.isRead)
+        XCTAssertFalse(pending.isRead)
+        XCTAssertFalse(savedArticle.isRead)
+
+        // The nil-scoped call still means "everything" — and still never
+        // touches saved links.
+        Article.markAllRead(in: container.mainContext)
+        XCTAssertTrue(inB.isRead)
+        XCTAssertTrue(pending.isRead)
+        XCTAssertFalse(savedArticle.isRead)
+    }
+
+    @MainActor
+    func testEditionScopedFeedMarkAllReadScopesToFeedAndEdition() throws {
+        let container = try makeContainer()
+        let feedA = makeFeed("a.example", in: container)
+        let feedB = makeFeed("b.example", in: container)
+        let edition = makeEdition(1, in: container)
+        let inEdition = addArticle("a-1", to: feedA, in: container)
+        inEdition.edition = edition
+        let pending = addArticle("a-2", to: feedA, in: container)
+        let otherFeed = addArticle("b-1", to: feedB, in: container)
+        otherFeed.edition = edition
+
+        feedA.markAllRead(within: edition)
+
+        XCTAssertTrue(inEdition.isRead)
+        XCTAssertFalse(pending.isRead)
+        XCTAssertFalse(otherFeed.isRead)
+        XCTAssertEqual(feedA.unreadCount(within: edition), 0)
+        XCTAssertEqual(feedA.unreadCount, 1)
+        XCTAssertEqual(feedB.unreadCount(within: edition), 1)
+    }
+
+    @MainActor
+    func testNilEditionScopeMatchesUnscopedBehavior() throws {
+        let container = try makeContainer()
+        let feed = makeFeed("a.example", in: container)
+        let edition = makeEdition(1, in: container)
+        let inEdition = addArticle("a-1", to: feed, in: container)
+        inEdition.edition = edition
+        addArticle("a-2", to: feed, in: container)
+
+        XCTAssertEqual(feed.unreadCount(within: nil), feed.unreadCount)
+
+        feed.markAllRead(within: nil)
+
+        XCTAssertEqual(feed.unreadCount, 0)
+        XCTAssertTrue(feed.articles.allSatisfy(\.isRead))
     }
 }

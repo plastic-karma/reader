@@ -212,9 +212,9 @@ struct AddFeedSheet: View {
 
 #Preview {
     AddFeedSheet()
-        .modelContainer(for: [Feed.self, Article.self], inMemory: true)
+        .modelContainer(for: [Feed.self, Article.self, Edition.self], inMemory: true)
         .environment(RefreshScheduler(modelContainer: try! ModelContainer(
-            for: Feed.self, Article.self,
+            for: Feed.self, Article.self, Edition.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )))
 }

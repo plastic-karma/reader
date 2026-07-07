@@ -73,7 +73,7 @@ final class NewsletterSyncTests: XCTestCase {
     @MainActor
     private func makeContainer() throws -> ModelContainer {
         try ModelContainer(
-            for: Feed.self, Article.self,
+            for: Feed.self, Article.self, Edition.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
     }
@@ -452,17 +452,22 @@ final class NewsletterSyncTests: XCTestCase {
         let engine = RefreshEngine(modelContainer: container)
 
         // Through the public refresh path the engine uses its live Gmail
-        // client, which fails fast (no usable credentials in a test host)
-        // — but it must NOT fall through to FeedFetcher, whose sentinel-URL
-        // failure reads "unsupported URL".
+        // client. On CI's unsigned test host that fails fast (no usable
+        // credentials); on a developer Mac that shares the real app's
+        // Keychain the sync can even succeed. Either way it must NOT fall
+        // through to FeedFetcher, whose sentinel-URL failure reads
+        // "unsupported URL".
         await engine.refresh(feedID: feedID)
 
         try await withNewsletterFeed(in: container) { feed in
-            let error = feed.lastError ?? ""
-            XCTAssertFalse(error.isEmpty, "The newsletter path ran and recorded its failure")
-            XCTAssertFalse(
-                error.localizedCaseInsensitiveContains("unsupported url"),
-                "Sentinel URL must never reach the HTTP fetcher")
+            XCTAssertNotNil(
+                feed.lastFetchedAt,
+                "The newsletter path ran to completion and kept its bookkeeping")
+            if let error = feed.lastError {
+                XCTAssertFalse(
+                    error.localizedCaseInsensitiveContains("unsupported url"),
+                    "Sentinel URL must never reach the HTTP fetcher")
+            }
         }
     }
 

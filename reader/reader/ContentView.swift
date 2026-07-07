@@ -498,7 +498,7 @@ private struct HostWindowReader: NSViewRepresentable {
 
 #Preview {
     let container = try! ModelContainer(
-        for: Feed.self, Article.self,
+        for: Feed.self, Article.self, Edition.self,
         configurations: ModelConfiguration(isStoredInMemoryOnly: true)
     )
     ContentView()

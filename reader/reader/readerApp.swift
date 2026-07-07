@@ -14,6 +14,7 @@ struct readerApp: App {
         let schema = Schema([
             Feed.self,
             Article.self,
+            Edition.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 

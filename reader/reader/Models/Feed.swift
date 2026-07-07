@@ -65,10 +65,26 @@ extension Feed {
         articles.count { !$0.isRead }
     }
 
+    /// Unread within one edition; nil counts the whole feed (delegating to
+    /// `unreadCount`, so global mode stays byte-identical to today).
+    func unreadCount(within edition: Edition?) -> Int {
+        guard let edition else { return unreadCount }
+        return articles.count { !$0.isRead && $0.edition == edition }
+    }
+
     /// Marks every unread article in this feed read. Skips already-read
     /// articles so repeat invocations don't dirty untouched models.
     func markAllRead() {
         for article in articles where !article.isRead {
+            article.isRead = true
+        }
+    }
+
+    /// Edition-scoped variant: marks only this feed's articles in that
+    /// edition; nil delegates to `markAllRead()` (the whole feed).
+    func markAllRead(within edition: Edition?) {
+        guard let edition else { return markAllRead() }
+        for article in articles where !article.isRead && article.edition == edition {
             article.isRead = true
         }
     }

@@ -14,7 +14,7 @@ final class LinkArchiverTests: XCTestCase {
     @MainActor
     private func makeContainer() throws -> ModelContainer {
         try ModelContainer(
-            for: Feed.self, Article.self,
+            for: Feed.self, Article.self, Edition.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
     }

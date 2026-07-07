@@ -284,6 +284,86 @@ actor RefreshEngine {
         }
     }
 
+    // MARK: - Editions
+
+    /// Sweeps every unassigned non-saved-links article into a new edition.
+    /// The first edition ever therefore sweeps the entire pre-existing
+    /// library (everything is unassigned); read/starred state is untouched,
+    /// and an empty sweep still creates the edition — a boundary with
+    /// nothing new is an honest "all caught up".
+    ///
+    /// Deliberately await-free: numbering, the sweep, and the save cannot
+    /// interleave with other actor work, which is what makes
+    /// `Edition.number` collision-free without a #Unique constraint (see
+    /// Edition). Adding an `await` in here is a correctness regression.
+    ///
+    /// Returns nil after a failed save (rolled back). Due-ness derives from
+    /// the persisted latest edition, so the scheduler's next wake retries.
+    @discardableResult
+    func publishEdition(
+        scheduledFor: Date,
+        isManual: Bool,
+        publishedAt: Date = .now
+    ) -> PersistentIdentifier? {
+        let number = (latestEdition()?.number ?? 0) + 1
+        let unassigned = (try? modelContext.fetch(
+            FetchDescriptor<Article>(predicate: #Predicate { $0.edition == nil })
+        )) ?? []
+        let savedKind = SourceKind.savedLinks.rawValue
+        let swept = unassigned.filter { $0.feed?.sourceKind != savedKind }
+        let edition = Edition(
+            number: number,
+            publishedAt: publishedAt,
+            scheduledFor: scheduledFor,
+            isManual: isManual
+        )
+        modelContext.insert(edition)
+        for article in swept {
+            article.edition = edition
+        }
+        do {
+            try modelContext.save()
+            return edition.persistentModelID
+        } catch {
+            modelContext.rollback()
+            return nil
+        }
+    }
+
+    /// Publishes at most one edition when a cadence boundary has elapsed —
+    /// multi-boundary gaps collapse into a single catch-up whose
+    /// scheduledFor is the most recent elapsed boundary. Returns the next
+    /// future boundary for the scheduler's sleep; nil when the cadence is
+    /// manual. Await-free for the same reason as `publishEdition`.
+    func publishDueEditionIfNeeded(
+        cadence: EditionCadence,
+        now: Date = .now,
+        calendar: Calendar = .current
+    ) -> Date? {
+        if let due = EditionSchedule.dueBoundary(
+            cadence: cadence,
+            lastScheduledFor: latestEdition()?.scheduledFor,
+            now: now,
+            calendar: calendar
+        ) {
+            publishEdition(scheduledFor: due, isManual: false, publishedAt: now)
+        }
+        return EditionSchedule.nextBoundary(
+            cadence: cadence,
+            lastScheduledFor: latestEdition()?.scheduledFor,
+            now: now,
+            calendar: calendar
+        )
+    }
+
+    private func latestEdition() -> Edition? {
+        var descriptor = FetchDescriptor<Edition>(
+            sortBy: [SortDescriptor(\.number, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        return try? modelContext.fetch(descriptor).first
+    }
+
     /// Sanitize, cache images locally, rewrite img sources — pure value work,
     /// safe to suspend on downloads.
     private func prepare(_ items: [ParsedItem], feedURL: URL) async -> [PreparedArticle] {

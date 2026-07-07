@@ -27,6 +27,10 @@ nonisolated final class Article {
     var isRead: Bool
     var isStarred: Bool
     var feed: Feed?
+    /// The edition that revealed this article; nil = pending the next
+    /// edition (or editions never used). Nil-defaulted so existing stores
+    /// migrate in place. Saved-link snapshots deliberately never get one.
+    var edition: Edition? = nil
     /// Saved-link snapshots only; nil for feed articles and after a
     /// successful (re-)download. Short human-readable failure reason.
     var downloadError: String? = nil
@@ -69,12 +73,17 @@ extension Article {
     /// toolbar button). Saved-link articles live only under the Saved view
     /// and are deliberately excluded. Per-feed marking is
     /// `Feed.markAllRead()`.
-    nonisolated static func markAllRead(in context: ModelContext) {
+    ///
+    /// An edition scopes the sweep to its members — the edition-mode
+    /// variant of the same action. Callers must pass nil for "everything";
+    /// nil is never a fallback for an unresolved edition.
+    nonisolated static func markAllRead(in context: ModelContext, within edition: Edition? = nil) {
         let unread = (try? context.fetch(
             FetchDescriptor<Article>(predicate: #Predicate { !$0.isRead })
         )) ?? []
         let savedKind = SourceKind.savedLinks.rawValue
         for article in unread where article.feed?.sourceKind != savedKind {
+            if let edition, article.edition != edition { continue }
             article.isRead = true
         }
     }

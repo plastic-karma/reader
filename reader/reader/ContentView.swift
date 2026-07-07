@@ -198,6 +198,31 @@ struct ContentView: View {
         isEditionMode && editions.isEmpty
     }
 
+    /// Articles not yet revealed by any edition. Saved links never count —
+    /// they are editionless by design.
+    private var waitingCount: Int {
+        subscriptionFeeds.reduce(0) { count, feed in
+            count + feed.articles.count { $0.edition == nil }
+        }
+    }
+
+    /// Masthead/onboarding caption: what's pending and when it reveals.
+    /// nil when there is nothing informative to say (manual cadence and
+    /// nothing waiting).
+    private var pendingCaption: String? {
+        let waiting = waitingCount
+        if let next = scheduler.nextEditionDate {
+            let day = next.formatted(.dateTime.weekday(.abbreviated).hour().minute())
+            return waiting > 0
+                ? "Next edition \(day) · \(waiting) waiting"
+                : "Next edition \(day)"
+        }
+        guard waiting > 0 else { return nil }
+        return waiting == 1
+            ? "1 article waiting for the next edition"
+            : "\(waiting) articles waiting for the next edition"
+    }
+
     /// Everything the sidebar shows as feed sections. Filtered by exclusion
     /// so future subscription kinds stay visible by default.
     private var subscriptionFeeds: [Feed] {
@@ -298,6 +323,7 @@ struct ContentView: View {
             } else if editionModeIsEmpty {
                 EmptyStateView(
                     state: .noEditions,
+                    detail: pendingCaption,
                     action: { createEditionNow() },
                     secondaryAction: { openSettings() })
             } else {
@@ -333,25 +359,32 @@ struct ContentView: View {
     /// .noEditions state owns that surface).
     private var editionBar: some View {
         @Bindable var editionContext = editionContext
-        return HStack {
-            Menu {
-                Picker("Edition", selection: $editionContext.selection) {
-                    ForEach(editions) { edition in
-                        Text(edition.displayLabel())
-                            .tag(pickerSelection(for: edition))
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Menu {
+                    Picker("Edition", selection: $editionContext.selection) {
+                        ForEach(editions) { edition in
+                            Text(edition.displayLabel())
+                                .tag(pickerSelection(for: edition))
+                        }
                     }
+                    .pickerStyle(.inline)
+                    Divider()
+                    Button("Create Edition Now") {
+                        createEditionNow()
+                    }
+                    .disabled(scheduler.isCreatingEdition)
+                } label: {
+                    Label(activeEdition?.displayLabel() ?? "Editions", systemImage: "newspaper")
+                        .lineLimit(1)
                 }
-                .pickerStyle(.inline)
-                Divider()
-                Button("Create Edition Now") {
-                    createEditionNow()
-                }
-                .disabled(scheduler.isCreatingEdition)
-            } label: {
-                Label(activeEdition?.displayLabel() ?? "Editions", systemImage: "newspaper")
-                    .lineLimit(1)
+                Spacer()
             }
-            Spacer()
+            if let pendingCaption {
+                Text(pendingCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)

@@ -1,6 +1,6 @@
 # Editions — Batched Article Reveal: Design & Implementation Plan
 
-> **Status:** in progress — M1 (models, schedule math, publishing core) in this PR; M2 scheduler backend, M3 edition-mode UI, M4 polish to follow, one PR per milestone, `bridge test` green after each.
+> **Status:** implemented (M1–M4, one PR per milestone: #13 #17 #15 #16 — M2 landed via #17 after #14 was auto-closed unrecoverably when its base branch was deleted during the chain merge; `bridge test` green after each). Remaining human smoke tests (the bridge can't drive the GUI): flip to Editions mode → onboarding → Create Edition Now → masthead appears; set a cadence a minute ahead and watch the boundary publish; relaunch after a missed boundary → one catch-up edition containing launch-synced articles; scoped badges/⌘⇧A against an old edition; Saved view identical in both modes; ⌘1/⌘2/⌘[/⌘]/⌘⇧E register; toolbar at 240 pt width.
 
 ## Context
 

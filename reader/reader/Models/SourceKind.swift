@@ -11,4 +11,7 @@ nonisolated enum SourceKind: String, CaseIterable, Sendable {
     case rss
     /// The hidden singleton feed that holds user-saved page snapshots.
     case savedLinks
+    /// A newsletter rule: articles pulled from the user's mailbox by
+    /// sender (+ optional subject regex). One feed per rule.
+    case newsletter
 }

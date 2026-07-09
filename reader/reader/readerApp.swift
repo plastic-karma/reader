@@ -30,10 +30,18 @@ struct readerApp: App {
     @State private var gmailAccount = GmailAccountController()
     @State private var editionContext = EditionContext()
 
+    init() {
+        Theme.registerFonts()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
         }
+        // No title bar, no toolbar: the window is two sheets of paper and
+        // the traffic lights float over the list pane.
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1240, height: 800)
         .modelContainer(Self.sharedModelContainer)
         .environment(scheduler)
         .environment(linkSaver)
@@ -46,7 +54,7 @@ struct readerApp: App {
                 }
                 .keyboardShortcut("r", modifiers: .command)
                 .disabled(scheduler.isRefreshing)
-                Button("Create Edition Now") {
+                Button("Publish Edition Now") {
                     createEditionNow()
                 }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
@@ -59,6 +67,7 @@ struct readerApp: App {
             CommandGroup(before: .sidebar) {
                 viewModeCommands
             }
+            FocusModeCommands()
         }
 
         Settings {
@@ -114,6 +123,24 @@ struct readerApp: App {
             } else {
                 Article.markAllRead(in: context)
             }
+        }
+    }
+}
+
+/// View ▸ Focus Mode (⌘⏎): collapses the list so the article re-centers on
+/// full paper. Menu-bar routing works no matter which pane has key focus —
+/// unlike view-scoped shortcuts, which the article's WKWebView would
+/// swallow. Esc (handled by ContentView's key monitor) is the way back.
+struct FocusModeCommands: Commands {
+    @FocusedBinding(\.readerFocusMode) private var focusMode: Bool?
+
+    var body: some Commands {
+        CommandGroup(after: .sidebar) {
+            Button(focusMode == true ? "Exit Focus Mode" : "Enter Focus Mode") {
+                focusMode = !(focusMode ?? false)
+            }
+            .keyboardShortcut(.return, modifiers: .command)
+            .disabled(focusMode == nil)
         }
     }
 }

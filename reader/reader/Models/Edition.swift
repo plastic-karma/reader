@@ -44,11 +44,11 @@ nonisolated final class Edition {
 }
 
 extension Edition {
-    /// Picker/masthead label: "Edition #12 · Mon, Jul 7", appending the year
-    /// only when `scheduledFor` falls outside `now`'s year, and " (manual)"
-    /// for hand-made editions. Parameters exist for deterministic tests;
-    /// UI callers use the defaults.
-    func displayLabel(
+    /// The date half of the label: "Mon, Jul 7", appending the year only
+    /// when `scheduledFor` falls outside `now`'s year. The masthead sets
+    /// this small next to the issue number. Parameters exist for
+    /// deterministic tests; UI callers use the defaults.
+    func dateLabel(
         relativeTo now: Date = .now,
         calendar: Calendar = .current,
         locale: Locale = .current
@@ -58,7 +58,17 @@ extension Edition {
         if calendar.component(.year, from: scheduledFor) != calendar.component(.year, from: now) {
             style = style.year()
         }
+        return scheduledFor.formatted(style)
+    }
+
+    /// Picker label: "Edition #12 · Mon, Jul 7", with " (manual)" for
+    /// hand-made editions.
+    func displayLabel(
+        relativeTo now: Date = .now,
+        calendar: Calendar = .current,
+        locale: Locale = .current
+    ) -> String {
         let suffix = isManual ? " (manual)" : ""
-        return "Edition #\(number) · \(scheduledFor.formatted(style))\(suffix)"
+        return "Edition #\(number) · \(dateLabel(relativeTo: now, calendar: calendar, locale: locale))\(suffix)"
     }
 }

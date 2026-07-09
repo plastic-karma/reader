@@ -16,6 +16,9 @@ enum EmptyState {
     case emptyEdition
 }
 
+/// Quiet empty states: a serif italic line in half ink, centered on the
+/// paper — plus, where there's something to do, one rust pill and a text
+/// action.
 struct EmptyStateView: View {
     let state: EmptyState
     /// Extra secondary line under the description — .noEditions shows the
@@ -25,72 +28,74 @@ struct EmptyStateView: View {
     var secondaryAction: (() -> Void)?
 
     var body: some View {
+        VStack(spacing: 12) {
+            Text(message)
+                .font(Theme.serif(state == .noSelection ? 16 : 14).italic())
+                .foregroundStyle(Theme.ink.opacity(state == .noSelection ? 0.4 : 0.45))
+                .multilineTextAlignment(.center)
+                .lineSpacing(4)
+                .frame(maxWidth: 260)
+            if let detail {
+                Text(detail)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.ink.opacity(0.45))
+                    .multilineTextAlignment(.center)
+            }
+            actions
+                .padding(.top, 6)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var message: String {
         switch state {
         case .noFeeds:
-            ContentUnavailableView {
-                Label("No Feeds", systemImage: "dot.radiowaves.up.forward")
-            } description: {
-                Text("Add an RSS feed or a Gmail newsletter rule to start reading.")
-            } actions: {
+            "Add an RSS feed or a Gmail newsletter rule to start reading."
+        case .noSelection:
+            "Choose an article from the list."
+        case .allCaughtUp:
+            "All caught up. Nothing unread."
+        case .noStarred:
+            "No starred articles yet."
+        case .noSavedLinks:
+            "No saved links yet. Right-click a link in any article and choose “Save Link”."
+        case .noEditions:
+            "Articles gather here until an edition is published. Publish one now, or pick a schedule in Settings."
+        case .editionCaughtUp:
+            "You’ve read everything in this edition."
+        case .emptyEdition:
+            "This edition has no articles."
+        }
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        switch state {
+        case .noFeeds:
+            VStack(spacing: 4) {
                 if let action {
                     Button("Add Feed", action: action)
+                        .buttonStyle(AccentPillButtonStyle())
                 }
                 if let secondaryAction {
                     Button("Add Newsletter Rule", action: secondaryAction)
+                        .buttonStyle(AccentTextButtonStyle())
                 }
             }
-        case .noSelection:
-            ContentUnavailableView(
-                "No Article Selected",
-                systemImage: "doc.richtext",
-                description: Text("Choose an article from the list.")
-            )
-        case .allCaughtUp:
-            ContentUnavailableView(
-                "All Caught Up",
-                systemImage: "checkmark.circle",
-                description: Text("No unread articles.")
-            )
-        case .noStarred:
-            ContentUnavailableView(
-                "No Starred Articles",
-                systemImage: "star",
-                description: Text("Star articles to find them here.")
-            )
-        case .noSavedLinks:
-            ContentUnavailableView(
-                "No Saved Links",
-                systemImage: "bookmark",
-                description: Text("Right-click a link in any article and choose “Save Link”.")
-            )
         case .noEditions:
-            ContentUnavailableView {
-                Label("No Editions Yet", systemImage: "newspaper")
-            } description: {
-                Text("Articles gather here until an edition is published. Create one now, or pick a schedule in Settings.")
-                if let detail {
-                    Text(detail)
-                }
-            } actions: {
+            VStack(spacing: 4) {
                 if let action {
-                    Button("Create Edition Now", action: action)
+                    Button("Publish Edition Now", action: action)
+                        .buttonStyle(AccentPillButtonStyle())
                 }
                 if let secondaryAction {
                     Button("Edition Settings…", action: secondaryAction)
+                        .buttonStyle(AccentTextButtonStyle())
                 }
             }
-        case .editionCaughtUp:
-            ContentUnavailableView(
-                "Edition Read",
-                systemImage: "checkmark.circle",
-                description: Text("You've read everything in this edition.")
-            )
-        case .emptyEdition:
-            ContentUnavailableView(
-                "Empty Edition",
-                systemImage: "newspaper",
-                description: Text("This edition has no articles.")
-            )
+        default:
+            EmptyView()
         }
     }
 }

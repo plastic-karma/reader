@@ -18,6 +18,21 @@ enum ArticleFilter: String, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
+/// Focus mode binding exposed to the menu bar (View ▸ Focus Mode, ⌘⏎).
+struct ReaderFocusModeKey: FocusedValueKey {
+    typealias Value = Binding<Bool>
+}
+
+extension FocusedValues {
+    var readerFocusMode: Binding<Bool>? {
+        get { self[ReaderFocusModeKey.self] }
+        set { self[ReaderFocusModeKey.self] = newValue }
+    }
+}
+
+/// Two warm papers side by side: the list pane on the darker sheet, the
+/// article on the brighter one. No toolbar, no window title — chrome sits
+/// quiet at the edges, and focus mode (⌘⏎) folds the list away entirely.
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(RefreshScheduler.self) private var scheduler
@@ -28,6 +43,7 @@ struct ContentView: View {
     @Query(sort: \Edition.number, order: .reverse) private var editions: [Edition]
     @State private var selectedArticle: Article?
     @State private var filter: ArticleFilter = .unread
+    @State private var isFocusMode = false
     @State private var isAddingFeed = false
     @State private var newsletterSheetTarget: NewsletterSheetTarget?
     @State private var feedPendingDeletion: Feed?
@@ -37,68 +53,24 @@ struct ContentView: View {
     @State private var keyDownMonitor: Any?
 
     var body: some View {
-        NavigationSplitView {
-            Group {
-                articleList
-            }
-            .navigationSplitViewColumnWidth(min: 240, ideal: 320)
-            .toolbar {
-                ToolbarItem {
-                    modePicker
-                }
-                ToolbarItem {
-                    if scheduler.isRefreshing {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Button {
-                            scheduler.refreshNow()
-                        } label: {
-                            Label("Refresh All", systemImage: "arrow.clockwise")
-                        }
-                        .disabled(subscriptionFeeds.isEmpty)
-                    }
-                }
-                ToolbarItem {
-                    // ⌘⇧A lives on the equivalent menu-bar command, not here —
-                    // duplicating it would make the shortcut ambiguous.
-                    Button {
-                        withAnimation {
-                            // activeEdition is nil in global mode (full sweep)
-                            // and non-nil in edition mode whenever this button
-                            // is enabled (totalUnreadCount is 0 without one).
-                            Article.markAllRead(in: modelContext, within: activeEdition)
-                        }
-                    } label: {
-                        Label("Mark All as Read", systemImage: "checkmark.circle")
-                    }
-                    .disabled(totalUnreadCount == 0)
-                }
-                ToolbarItem {
-                    Menu {
-                        Button("Add Feed…") {
-                            isAddingFeed = true
-                        }
-                        .keyboardShortcut("n", modifiers: .command)
-                        Button("Add Newsletter Rule…") {
-                            newsletterSheetTarget = .new
-                        }
-                    } label: {
-                        Label("Add", systemImage: "plus")
-                    }
-                }
-            }
-            .task {
-                scheduler.start()
-            }
-        } detail: {
-            if let article = selectedArticle {
-                ReadingPaneView(article: article)
-            } else {
-                EmptyStateView(state: .noSelection)
-            }
+        HStack(spacing: 0) {
+            listPane
+                .frame(width: 300)
+                .frame(width: isFocusMode ? 0 : 300, alignment: .leading)
+                .clipped()
+            detailPane
         }
+        .ignoresSafeArea()
+        .frame(minWidth: 700, minHeight: 440)
+        .background(Theme.page)
+        .animation(.timingCurve(0.4, 0, 0.2, 1, duration: 0.38), value: isFocusMode)
+        .focusedSceneValue(\.readerFocusMode, $isFocusMode)
+        .preferredColorScheme(.light)
+        .tint(Theme.accent)
         .background(HostWindowReader(window: $hostWindow))
+        .task {
+            scheduler.start()
+        }
         .onAppear {
             installKeyDownMonitor()
         }
@@ -165,6 +137,242 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Panes
+
+    private var listPane: some View {
+        VStack(spacing: 0) {
+            lensRow
+            filterRow
+            if isEditionMode, filter != .saved, !editions.isEmpty {
+                masthead
+            }
+            listBody
+            bottomBar
+        }
+        .frame(width: 300)
+        .frame(maxHeight: .infinity)
+        .background(Theme.list)
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(Theme.hairline).frame(width: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var detailPane: some View {
+        if let article = selectedArticle {
+            ReadingPaneView(article: article, isFocused: $isFocusMode)
+        } else {
+            EmptyStateView(state: .noSelection)
+                .background(Theme.page)
+        }
+    }
+
+    // MARK: - List chrome
+
+    /// Top row: room for the traffic lights, then the Global / Editions
+    /// lens as plain text. The menu-bar View commands (⌘1/⌘2) mirror it.
+    private var lensRow: some View {
+        HStack(spacing: 12) {
+            Spacer()
+            InkTab(
+                label: "Global",
+                size: 11,
+                inactiveOpacity: 0.45,
+                isActive: editionContext.mode == .global
+            ) {
+                editionContext.mode = .global
+            }
+            .help("All articles as they arrive (⌘1)")
+            InkTab(
+                label: "Editions",
+                size: 11,
+                inactiveOpacity: 0.45,
+                isActive: editionContext.mode == .editions
+            ) {
+                editionContext.mode = .editions
+            }
+            .help("Batched, numbered editions (⌘2)")
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 44)
+    }
+
+    /// Plain-text filters plus one unread total — the segmented box, gone
+    /// quiet.
+    private var filterRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 13) {
+            ForEach(ArticleFilter.allCases) { choice in
+                InkTab(label: choice.rawValue, isActive: filter == choice) {
+                    filter = choice
+                }
+            }
+            Spacer()
+            Text(totalUnreadCount == 0 ? "caught up" : "\(totalUnreadCount) unread")
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(Theme.ink.opacity(0.45))
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 2)
+        .padding(.bottom, 10)
+    }
+
+    /// Edition-mode masthead: the issue number set in Literata, ‹ › to page
+    /// through back issues, and the pending caption underneath. Hidden on
+    /// the Saved segment (saved links are editionless) and while no
+    /// editions exist (the .noEditions state owns that surface).
+    private var masthead: some View {
+        @Bindable var editionContext = editionContext
+        let current = activeEdition
+        let currentIndex = current.flatMap { edition in
+            editions.firstIndex { $0 === edition }
+        }
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Menu {
+                    Picker("Edition", selection: $editionContext.selection) {
+                        ForEach(editions) { edition in
+                            Text(edition.displayLabel())
+                                .tag(pickerSelection(for: edition))
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    Divider()
+                    Button("Publish Edition Now") {
+                        createEditionNow()
+                    }
+                    .disabled(scheduler.isCreatingEdition)
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(current.map { "Edition #\($0.number)" } ?? "Editions")
+                            .font(Theme.serif(17, weight: .semibold))
+                            .foregroundStyle(Theme.ink)
+                        if let current {
+                            Text(current.dateLabel().uppercased())
+                                .font(.system(size: 10, weight: .semibold))
+                                .tracking(1.2)
+                                .foregroundStyle(Theme.ink.opacity(0.5))
+                                .lineLimit(1)
+                        }
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 7, weight: .semibold))
+                            .foregroundStyle(Theme.inkSoft.opacity(0.5))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                Spacer()
+                QuietIconButton(
+                    idleOpacity: 0.55,
+                    width: 22,
+                    height: 20,
+                    help: "Older edition (⌘[)",
+                    action: { editionContext.selectOlder(in: modelContext) }
+                ) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 9, weight: .medium))
+                }
+                .disabled(currentIndex.map { $0 >= editions.count - 1 } ?? true)
+                QuietIconButton(
+                    idleOpacity: 0.55,
+                    width: 22,
+                    height: 20,
+                    help: "Newer edition (⌘])",
+                    action: { editionContext.selectNewer(in: modelContext) }
+                ) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .medium))
+                }
+                .disabled(currentIndex.map { $0 <= 0 } ?? true)
+            }
+            if let pendingCaption {
+                Text(pendingCaption)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.ink.opacity(0.45))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 2)
+        .padding(.bottom, 12)
+    }
+
+    /// Quiet feed management, at the bottom and out of the eye line:
+    /// refresh, mark read, add.
+    private var bottomBar: some View {
+        HStack(spacing: 2) {
+            if scheduler.isRefreshing {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 28, height: 26)
+            } else {
+                QuietIconButton(
+                    help: "Refresh all feeds",
+                    action: { scheduler.refreshNow() }
+                ) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .disabled(subscriptionFeeds.isEmpty)
+            }
+            QuietIconButton(
+                help: "Mark all as read",
+                action: {
+                    withAnimation {
+                        // activeEdition is nil in global mode (full sweep)
+                        // and non-nil in edition mode whenever this button
+                        // is enabled (totalUnreadCount is 0 without one).
+                        Article.markAllRead(in: modelContext, within: activeEdition)
+                    }
+                }
+            ) {
+                Image(systemName: "checkmark.circle")
+                    .font(.system(size: 13))
+            }
+            .disabled(totalUnreadCount == 0)
+            addMenu
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 44)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Theme.hairlineSoft).frame(height: 1)
+        }
+    }
+
+    @State private var hoveringAddMenu = false
+
+    private var addMenu: some View {
+        Menu {
+            Button("Add Feed…") {
+                isAddingFeed = true
+            }
+            .keyboardShortcut("n", modifiers: .command)
+            Button("Add Newsletter Rule…") {
+                newsletterSheetTarget = .new
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.inkSoft)
+                .frame(width: 28, height: 26)
+                .background(
+                    hoveringAddMenu ? Theme.ink.opacity(0.06) : .clear,
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .opacity(hoveringAddMenu ? 1 : 0.4)
+        .onHover { hoveringAddMenu = $0 }
+        .help("Add feed or newsletter rule")
+    }
+
+    // MARK: - Membership
+
     /// Kind-aware membership: saved-link articles live only under .saved and
     /// subscription articles never do — this is what makes the selection
     /// retention drop cross-kind selections. `edition` is the edition-mode
@@ -229,12 +437,13 @@ struct ContentView: View {
         feeds.filter { !$0.isSavedLinksFeed }
     }
 
-    /// Unread across all subscriptions — drives the mark-all-read toolbar
-    /// button's disabled state. Saved links never count: they are excluded
-    /// from the global action too, so button and action stay in agreement.
-    /// In edition mode both the count and the action scope to the active
-    /// edition (and zero with no editions keeps the button disabled, so it
-    /// can never fall back to marking the world read).
+    /// Unread across all subscriptions — drives the mark-all-read button's
+    /// disabled state and the filter-row total. Saved links never count:
+    /// they are excluded from the global action too, so button and action
+    /// stay in agreement. In edition mode both the count and the action
+    /// scope to the active edition (and zero with no editions keeps the
+    /// button disabled, so it can never fall back to marking the world
+    /// read).
     private var totalUnreadCount: Int {
         if editionModeIsEmpty { return 0 }
         return subscriptionFeeds.reduce(0) { $0 + $1.unreadCount(within: activeEdition) }
@@ -261,30 +470,6 @@ struct ContentView: View {
             .sorted { $0.sortDate > $1.sortDate }
     }
 
-    /// Global ↔ Editions lens switch. Lives in the toolbar (not the sidebar
-    /// stack) so global mode's sidebar stays pixel-identical to today; the
-    /// menu-bar View commands (⌘1/⌘2) mirror it.
-    private var modePicker: some View {
-        @Bindable var editionContext = editionContext
-        return Picker("View Mode", selection: $editionContext.mode) {
-            Label("Global", systemImage: "tray.full")
-                .tag(ViewMode.global)
-            Label("Editions", systemImage: "newspaper")
-                .tag(ViewMode.editions)
-        }
-        .pickerStyle(.segmented)
-        .help("Switch between all articles and editions")
-    }
-
-    /// Drives a section's disclosure triangle. Stored inverted so a brand-new
-    /// feed (isCollapsed == false) starts expanded.
-    private func expansion(for feed: Feed) -> Binding<Bool> {
-        Binding(
-            get: { !feed.isCollapsed },
-            set: { feed.isCollapsed = !$0 }
-        )
-    }
-
     private func setAllCollapsed(_ collapsed: Bool) {
         withAnimation {
             for feed in subscriptionFeeds {
@@ -293,114 +478,53 @@ struct ContentView: View {
         }
     }
 
-    private var articleList: some View {
-        VStack(spacing: 0) {
-            Picker("Filter", selection: $filter) {
-                ForEach(ArticleFilter.allCases) { choice in
-                    Text(choice.rawValue).tag(choice)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            if isEditionMode, filter != .saved, !editions.isEmpty {
-                editionBar
-            }
-            if filter == .saved {
-                if savedArticles.isEmpty {
-                    EmptyStateView(state: .noSavedLinks)
-                } else {
-                    revealingSelection(of: savedList(savedArticles))
-                }
-            } else if subscriptionFeeds.isEmpty {
-                // Root cause first: with no feeds at all, onboarding beats
-                // the no-editions state.
-                EmptyStateView(
-                    state: .noFeeds,
-                    action: { isAddingFeed = true },
-                    secondaryAction: { newsletterSheetTarget = .new })
-            } else if editionModeIsEmpty {
-                EmptyStateView(
-                    state: .noEditions,
-                    detail: pendingCaption,
-                    action: { createEditionNow() },
-                    secondaryAction: { openSettings() })
+    // MARK: - List body
+
+    @ViewBuilder
+    private var listBody: some View {
+        if filter == .saved {
+            if savedArticles.isEmpty {
+                EmptyStateView(state: .noSavedLinks)
             } else {
-                let sections = subscriptionFeeds.map { (feed: $0, articles: visibleArticles(for: $0)) }
-                let allEmpty = sections.allSatisfy { $0.articles.isEmpty }
-                // All mode never short-circuits: its sections are the only UI
-                // carrying a feed's error glyph and Delete Feed menu, which must
-                // stay reachable even when every feed is empty. (In edition
-                // mode that management lens is global mode's job — see
-                // list(sections:) — so empty editions do short-circuit.)
-                if allEmpty, isEditionMode {
-                    if filter == .unread {
-                        EmptyStateView(state: .editionCaughtUp)
-                    } else if filter == .starred {
-                        EmptyStateView(state: .noStarred)
-                    } else {
-                        EmptyStateView(state: .emptyEdition)
-                    }
-                } else if allEmpty, filter == .unread {
-                    EmptyStateView(state: .allCaughtUp)
-                } else if allEmpty, filter == .starred {
+                revealingSelection(of: savedList(savedArticles))
+            }
+        } else if subscriptionFeeds.isEmpty {
+            // Root cause first: with no feeds at all, onboarding beats
+            // the no-editions state.
+            EmptyStateView(
+                state: .noFeeds,
+                action: { isAddingFeed = true },
+                secondaryAction: { newsletterSheetTarget = .new })
+        } else if editionModeIsEmpty {
+            EmptyStateView(
+                state: .noEditions,
+                detail: pendingCaption,
+                action: { createEditionNow() },
+                secondaryAction: { openSettings() })
+        } else {
+            let sections = subscriptionFeeds.map { (feed: $0, articles: visibleArticles(for: $0)) }
+            let allEmpty = sections.allSatisfy { $0.articles.isEmpty }
+            // All mode never short-circuits: its sections are the only UI
+            // carrying a feed's error glyph and Delete Feed menu, which must
+            // stay reachable even when every feed is empty. (In edition
+            // mode that management lens is global mode's job — see
+            // list(sections:) — so empty editions do short-circuit.)
+            if allEmpty, isEditionMode {
+                if filter == .unread {
+                    EmptyStateView(state: .editionCaughtUp)
+                } else if filter == .starred {
                     EmptyStateView(state: .noStarred)
                 } else {
-                    revealingSelection(of: list(sections: sections))
+                    EmptyStateView(state: .emptyEdition)
                 }
+            } else if allEmpty, filter == .unread {
+                EmptyStateView(state: .allCaughtUp)
+            } else if allEmpty, filter == .starred {
+                EmptyStateView(state: .noStarred)
+            } else {
+                revealingSelection(of: list(sections: sections))
             }
         }
-    }
-
-    /// Edition-mode masthead: which edition is on screen, the back-catalog
-    /// picker, and the manual publish action. Hidden on the Saved segment
-    /// (saved links are editionless) and while no editions exist (the
-    /// .noEditions state owns that surface).
-    private var editionBar: some View {
-        @Bindable var editionContext = editionContext
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Menu {
-                    Picker("Edition", selection: $editionContext.selection) {
-                        ForEach(editions) { edition in
-                            Text(edition.displayLabel())
-                                .tag(pickerSelection(for: edition))
-                        }
-                    }
-                    .pickerStyle(.inline)
-                    Divider()
-                    Button("Create Edition Now") {
-                        createEditionNow()
-                    }
-                    .disabled(scheduler.isCreatingEdition)
-                } label: {
-                    Label(activeEdition?.displayLabel() ?? "Editions", systemImage: "newspaper")
-                        .lineLimit(1)
-                }
-                Spacer()
-            }
-            if let pendingCaption {
-                Text(pendingCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
-    }
-
-    /// The newest edition's picker row tags `.latest`, so choosing it
-    /// re-arms follow-newest instead of pinning; every other row pins.
-    private func pickerSelection(for edition: Edition) -> EditionSelection {
-        edition === editions.first ? .latest : .specific(edition.persistentModelID)
-    }
-
-    private func createEditionNow() {
-        scheduler.createEditionNow()
-        // Show what was just made: the @Query advances this to the new
-        // edition as soon as the engine's save lands.
-        editionContext.selection = .latest
     }
 
     /// Wraps a list so programmatic selection changes (j/k) scroll the
@@ -418,106 +542,111 @@ struct ContentView: View {
     }
 
     private func savedList(_ articles: [Article]) -> some View {
-        List(selection: $selectedArticle) {
-            ForEach(articles) { article in
-                ArticleRowView(article: article)
-                    .tag(article)
-                    .contextMenu {
-                        savedArticleMenu(for: article)
-                    }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(articles) { article in
+                    row(for: article, menu: { savedArticleMenu(for: article) })
+                }
             }
+            .padding(.top, 8)
+            .padding(.bottom, 10)
         }
-        .listStyle(.sidebar)
     }
 
     private func list(sections: [(feed: Feed, articles: [Article])]) -> some View {
-        List(selection: $selectedArticle) {
-            ForEach(sections, id: \.feed) { feed, articles in
-                // In All mode every feed stays visible (with a hint when it
-                // has nothing yet); filtered modes hide silent feeds. Edition
-                // mode hides them even under All — a newspaper shows only
-                // sections that ran, and feed management (error glyph,
-                // Delete) stays one toggle away in global mode.
-                if !articles.isEmpty || (filter == .all && !isEditionMode) {
-                    Section(isExpanded: expansion(for: feed)) {
-                        if articles.isEmpty {
-                            Text("No articles yet")
-                                .font(.callout)
-                                .foregroundStyle(.tertiary)
-                        } else {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(sections, id: \.feed) { feed, articles in
+                    // In All mode every feed stays visible (with a hint when
+                    // it has nothing yet); filtered modes hide silent feeds.
+                    // Edition mode hides them even under All — a newspaper
+                    // shows only sections that ran, and feed management
+                    // (error glyph, Delete) stays one toggle away in global
+                    // mode.
+                    if !articles.isEmpty || (filter == .all && !isEditionMode) {
+                        FeedSectionView(
+                            feed: feed,
+                            unreadCount: feed.unreadCount(within: activeEdition),
+                            showsEmptyHint: articles.isEmpty
+                        ) {
                             ForEach(articles) { article in
-                                ArticleRowView(article: article)
-                                    .tag(article)
-                                    .contextMenu {
-                                        articleMenu(for: article)
-                                    }
+                                row(for: article, menu: { articleMenu(for: article) })
                             }
+                        } menu: {
+                            feedMenu(for: feed)
                         }
-                    } header: {
-                    HStack(spacing: 6) {
-                        Text(feed.title)
-                            .lineLimit(1)
-                        if let lastError = feed.lastError {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.yellow)
-                                .help(lastError)
-                        }
-                        Spacer()
-                        let unreadCount = feed.unreadCount(within: activeEdition)
-                        if unreadCount > 0 {
-                            Text("\(unreadCount)")
-                                .font(.caption)
-                                .monospacedDigit()
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 1)
-                                .background(.quaternary, in: Capsule())
-                        }
-                    }
-                    .contextMenu {
-                        Button(feed.isCollapsed ? "Expand" : "Collapse") {
-                            withAnimation { feed.isCollapsed.toggle() }
-                        }
-                        Button("Collapse All") { setAllCollapsed(true) }
-                        Button("Expand All") { setAllCollapsed(false) }
-                        Divider()
-                        Button("Mark All as Read") {
-                            withAnimation {
-                                feed.markAllRead(within: activeEdition)
-                            }
-                        }
-                        .disabled(feed.unreadCount(within: activeEdition) == 0)
-                        Button("Rename…") {
-                            renameText = feed.title
-                            feedPendingRename = feed
-                        }
-                        if feed.isNewsletterFeed {
-                            // The sentinel URL is meaningless to copy; rule
-                            // editing takes that slot instead.
-                            Button("Edit Newsletter Rule…") {
-                                newsletterSheetTarget = .edit(feed)
-                            }
-                        } else {
-                            Button("Copy Feed URL") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(feed.feedURL.absoluteString, forType: .string)
-                            }
-                        }
-                        Divider()
-                        Button("Delete Feed…", role: .destructive) {
-                            feedPendingDeletion = feed
-                        }
-                    }
                     }
                 }
             }
+            .padding(.bottom, 10)
         }
-        .listStyle(.sidebar)
     }
 
-    /// j/k must work no matter which pane has key focus — clicking into the
-    /// article's WKWebView steals first responder, which would silence a
-    /// focus-scoped onKeyPress — so navigation keys are intercepted by a
-    /// window-scoped monitor instead.
+    @ViewBuilder
+    private func feedMenu(for feed: Feed) -> some View {
+        Button(feed.isCollapsed ? "Expand" : "Collapse") {
+            withAnimation { feed.isCollapsed.toggle() }
+        }
+        Button("Collapse All") { setAllCollapsed(true) }
+        Button("Expand All") { setAllCollapsed(false) }
+        Divider()
+        Button("Mark All as Read") {
+            withAnimation {
+                feed.markAllRead(within: activeEdition)
+            }
+        }
+        .disabled(feed.unreadCount(within: activeEdition) == 0)
+        Button("Rename…") {
+            renameText = feed.title
+            feedPendingRename = feed
+        }
+        if feed.isNewsletterFeed {
+            // The sentinel URL is meaningless to copy; rule
+            // editing takes that slot instead.
+            Button("Edit Newsletter Rule…") {
+                newsletterSheetTarget = .edit(feed)
+            }
+        } else {
+            Button("Copy Feed URL") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(feed.feedURL.absoluteString, forType: .string)
+            }
+        }
+        Divider()
+        Button("Delete Feed…", role: .destructive) {
+            feedPendingDeletion = feed
+        }
+    }
+
+    private func row(for article: Article, @ViewBuilder menu: () -> some View) -> some View {
+        ArticleRowView(article: article, isSelected: selectedArticle == article)
+            .padding(.horizontal, 8)
+            .id(article.persistentModelID)
+            .onTapGesture { selectedArticle = article }
+            .contextMenu { menu() }
+    }
+
+    // MARK: - Editions
+
+    /// The newest edition's picker row tags `.latest`, so choosing it
+    /// re-arms follow-newest instead of pinning; every other row pins.
+    private func pickerSelection(for edition: Edition) -> EditionSelection {
+        edition === editions.first ? .latest : .specific(edition.persistentModelID)
+    }
+
+    private func createEditionNow() {
+        scheduler.createEditionNow()
+        // Show what was just made: the @Query advances this to the new
+        // edition as soon as the engine's save lands.
+        editionContext.selection = .latest
+    }
+
+    // MARK: - Keyboard
+
+    /// j/k and focus-mode Esc must work no matter which pane has key focus —
+    /// clicking into the article's WKWebView steals first responder, which
+    /// would silence a focus-scoped onKeyPress — so navigation keys are
+    /// intercepted by a window-scoped monitor instead.
     private func installKeyDownMonitor() {
         guard keyDownMonitor == nil else { return }
         keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -537,6 +666,10 @@ struct ContentView: View {
                     return nil
                 case "k":
                     selectPreviousUnread()
+                    return nil
+                case "\u{1B}":  // Esc leaves focus mode; otherwise not ours.
+                    guard isFocusMode else { return event }
+                    isFocusMode = false
                     return nil
                 default:
                     return event
@@ -593,6 +726,8 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Menus
+
     @ViewBuilder
     private func articleMenu(for article: Article) -> some View {
         Button(article.isRead ? "Mark as Unread" : "Mark as Read") {
@@ -644,6 +779,77 @@ struct ContentView: View {
         withAnimation {
             modelContext.delete(feed)
         }
+    }
+}
+
+/// One feed's slice of the list: uppercase header, then rows unless the
+/// feed is folded. A dedicated view (not a builder on ContentView) so that
+/// Observation registers the isCollapsed/title/lastError reads against this
+/// view — LazyVStack evaluates section content outside ContentView.body,
+/// where those reads wouldn't reliably re-render on toggle. Clicking the
+/// header folds/unfolds (the old sidebar's disclosure triangle, gone
+/// quiet); the context menu keeps the bulk actions.
+private struct FeedSectionView<Rows: View, MenuItems: View>: View {
+    let feed: Feed
+    let unreadCount: Int
+    /// All-filter hint for a feed with nothing yet ("No articles yet").
+    let showsEmptyHint: Bool
+    @ViewBuilder let rows: () -> Rows
+    @ViewBuilder let menu: () -> MenuItems
+
+    var body: some View {
+        header
+            .padding(.top, 14)
+        if !feed.isCollapsed {
+            if showsEmptyHint {
+                Text("No articles yet")
+                    .font(Theme.serif(12).italic())
+                    .foregroundStyle(Theme.ink.opacity(0.35))
+                    .padding(.horizontal, 16)
+                    .padding(.top, 3)
+                    .padding(.bottom, 2)
+            } else {
+                rows()
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Text(feed.title.uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(1.2)
+                .foregroundStyle(Theme.ink.opacity(0.45))
+                .lineLimit(1)
+            if feed.isCollapsed {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(Theme.ink.opacity(0.4))
+            }
+            if let lastError = feed.lastError {
+                Text("!")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 12, height: 12)
+                    .overlay(Circle().stroke(Theme.accent, lineWidth: 1))
+                    .help(lastError)
+            }
+            Spacer()
+            if unreadCount > 0 {
+                Text("\(unreadCount)")
+                    .font(.system(size: 10))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.ink.opacity(0.4))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation { feed.isCollapsed.toggle() }
+        }
+        .help(feed.isCollapsed ? "Show articles" : "Hide articles")
+        .contextMenu { menu() }
     }
 }
 
